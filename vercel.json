@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/limelight/sync",
+      "schedule": "0 6 * * *"
+    }
+  ]
+}
