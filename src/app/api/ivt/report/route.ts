@@ -2,23 +2,25 @@ import { createServiceClient } from '@/lib/supabase/server';
 import { NextRequest, NextResponse } from 'next/server';
 import type { IVTReportData } from '@/types';
 
-// GIVT (General Invalid Traffic) rule IDs
+// GIVT (General Invalid Traffic) rule IDs (must match ruleId in rules.ts)
 const GIVT_RULES = [
-  'INVALID_IFA',
-  'ZERO_IFA',
-  'PATTERN_IFA',
-  'DATACENTER_IP',
-  'BOT_UA',
-  'EMPTY_UA',
-  'INVALID_BUNDLE',
+  'invalid_ifa',
+  'datacenter_ip',
+  'bot_user_agent',
+  'invalid_bundle',
 ];
 
-// SIVT (Sophisticated Invalid Traffic) rule IDs
+// SIVT (Sophisticated Invalid Traffic) rule IDs (lowercase to match DB values)
 const SIVT_RULES = [
-  'HIGH_FREQ_IFA',
-  'HIGH_FREQ_IP',
-  'DEVICE_OS_MISMATCH',
+  'high_freq_ifa',
+  'high_freq_ip',
+  'device_os_mismatch',
 ];
+
+// Strip /32 suffix from INET type
+function cleanIP(ip: string): string {
+  return ip ? ip.replace(/\/\d+$/, '') : ip;
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -88,11 +90,11 @@ export async function GET(request: NextRequest) {
       if (reasonCounts && Array.isArray(reasonCounts)) {
         for (const row of reasonCounts) {
           const reason = (row.reason as string) || '';
-          const count = Number(row.count) || 0;
+          const cnt = Number(row.cnt) || 0;
           if (GIVT_RULES.includes(reason)) {
-            givtCount += count;
+            givtCount += cnt;
           } else if (SIVT_RULES.includes(reason)) {
-            sivtCount += count;
+            sivtCount += cnt;
           }
         }
       }
@@ -114,15 +116,13 @@ export async function GET(request: NextRequest) {
       if (reasonErr) throw reasonErr;
 
       if (reasonData && Array.isArray(reasonData)) {
-        topReasons = reasonData.map((r: { reason: string; count: number }) => ({
+        topReasons = reasonData.map((r: { reason: string; cnt: number }) => ({
           reason: r.reason,
-          count: Number(r.count),
+          count: Number(r.cnt),
         }));
-        // Sort descending by count
         topReasons.sort((a, b) => b.count - a.count);
       }
     } catch {
-      // RPC not available -- return empty
       topReasons = [];
     }
 
@@ -138,8 +138,8 @@ export async function GET(request: NextRequest) {
       if (trendErr) throw trendErr;
 
       if (trendData && Array.isArray(trendData)) {
-        dailyTrend = trendData.map((d: { date: string; total: number; suspicious: number }) => ({
-          date: d.date,
+        dailyTrend = trendData.map((d: { day: string; total: number; suspicious: number }) => ({
+          date: d.day,
           total: Number(d.total),
           suspicious: Number(d.suspicious),
           rate: Number(d.total) > 0
@@ -148,7 +148,6 @@ export async function GET(request: NextRequest) {
         }));
       }
     } catch {
-      // RPC not available -- return empty
       dailyTrend = [];
     }
 
@@ -164,14 +163,13 @@ export async function GET(request: NextRequest) {
       if (ipErr) throw ipErr;
 
       if (ipData && Array.isArray(ipData)) {
-        topSuspiciousIPs = ipData.map((r: { ip: string; count: number; unique_bundles: number }) => ({
-          ip: r.ip,
-          count: Number(r.count),
+        topSuspiciousIPs = ipData.map((r: { ip: string; cnt: number; unique_bundles: number }) => ({
+          ip: cleanIP(r.ip),
+          count: Number(r.cnt),
           uniqueBundles: Number(r.unique_bundles),
         }));
       }
     } catch {
-      // RPC not available -- return empty
       topSuspiciousIPs = [];
     }
 
@@ -188,15 +186,14 @@ export async function GET(request: NextRequest) {
 
       if (bundleData && Array.isArray(bundleData)) {
         topSuspiciousBundles = bundleData.map(
-          (r: { bundle: string; count: number; suspicious_rate: number }) => ({
+          (r: { bundle: string; suspicious_count: number; suspicious_rate: number }) => ({
             bundle: r.bundle,
-            count: Number(r.count),
+            count: Number(r.suspicious_count),
             suspiciousRate: Number(r.suspicious_rate),
           })
         );
       }
     } catch {
-      // RPC not available -- return empty
       topSuspiciousBundles = [];
     }
 
