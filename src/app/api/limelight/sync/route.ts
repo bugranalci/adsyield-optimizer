@@ -1,6 +1,6 @@
 import { NextResponse, NextRequest } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
-import { fetchLimelightStats, getYesterdayDate, getDateRange } from '@/lib/limelight/client';
+import { fetchLimelightStats, getYesterdayDate, getDateRange, SYNC_DIMENSIONS } from '@/lib/limelight/client';
 import { transformLimelightResponse } from '@/lib/limelight/transformer';
 
 // POST - Manual sync (from UI "Sync Now" button)
@@ -28,10 +28,11 @@ export async function POST(request: NextRequest) {
 
     const result = await performSync(syncStart, syncEnd);
     return NextResponse.json(result);
-  } catch (error: any) {
-    console.error('Limelight sync POST error:', error);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Sync failed';
+    console.error('Limelight sync POST error:', message);
     return NextResponse.json(
-      { error: error.message || 'Sync failed' },
+      { error: message },
       { status: 500 }
     );
   }
@@ -52,10 +53,11 @@ export async function GET(request: NextRequest) {
     const yesterday = getYesterdayDate();
     const result = await performSync(yesterday, yesterday);
     return NextResponse.json(result);
-  } catch (error: any) {
-    console.error('Limelight sync GET error:', error);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Sync failed';
+    console.error('Limelight sync GET error:', message);
     return NextResponse.json(
-      { error: error.message || 'Sync failed' },
+      { error: message },
       { status: 500 }
     );
   }
@@ -77,12 +79,17 @@ async function performSync(startDate: string, endDate: string) {
     .single();
 
   try {
-    // Fetch from Limelight API
-    const rawData = await fetchLimelightStats({ startDate, endDate });
+    // Fetch from Limelight API using core sync dimensions (DATE, DEMAND, PUBLISHER)
+    console.log(`[Sync] Starting: ${startDate} to ${endDate}`);
+    const rawData = await fetchLimelightStats({
+      startDate,
+      endDate,
+      dimensions: SYNC_DIMENSIONS,
+    });
+
     const transformed = transformLimelightResponse(rawData);
 
     if (transformed.length === 0) {
-      // Update sync log
       if (syncLog) {
         await supabase
           .from('sync_logs')
@@ -100,6 +107,7 @@ async function performSync(startDate: string, endDate: string) {
     // Upsert in batches (Supabase has row limits per request)
     const BATCH_SIZE = 500;
     let totalSynced = 0;
+    let errorCount = 0;
 
     for (let i = 0; i < transformed.length; i += BATCH_SIZE) {
       const batch = transformed.slice(i, i + BATCH_SIZE);
@@ -112,12 +120,15 @@ async function performSync(startDate: string, endDate: string) {
         });
 
       if (upsertError) {
-        console.error('Upsert error for batch:', upsertError);
-        throw upsertError;
+        console.error(`[Sync] Upsert batch ${Math.floor(i / BATCH_SIZE) + 1} error:`, upsertError.message);
+        errorCount++;
+        continue;
       }
 
       totalSynced += batch.length;
     }
+
+    console.log(`[Sync] Done: ${totalSynced} rows synced, ${errorCount} errors`);
 
     // Update sync log
     if (syncLog) {
@@ -126,6 +137,7 @@ async function performSync(startDate: string, endDate: string) {
         .update({
           rows_synced: totalSynced,
           status: 'completed',
+          error_message: errorCount > 0 ? `${errorCount} batch(es) had errors` : null,
           completed_at: new Date().toISOString(),
         })
         .eq('id', syncLog.id);
@@ -134,16 +146,20 @@ async function performSync(startDate: string, endDate: string) {
     return {
       success: true,
       rowsSynced: totalSynced,
+      totalRows: transformed.length,
+      errors: errorCount,
       dateRange: { startDate, endDate },
     };
-  } catch (error: any) {
-    // Update sync log with failure
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Sync] Fatal error:', message);
+
     if (syncLog) {
       await supabase
         .from('sync_logs')
         .update({
           status: 'failed',
-          error_message: error.message,
+          error_message: message,
           completed_at: new Date().toISOString(),
         })
         .eq('id', syncLog.id);

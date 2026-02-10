@@ -1,13 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import {
   Box,
   Grid,
   Card,
   CardContent,
   Typography,
-  Chip,
   Skeleton,
   Table,
   TableBody,
@@ -17,13 +15,15 @@ import {
   TableRow,
   LinearProgress,
 } from '@mui/material';
-import TrendingUpIcon from '@mui/icons-material/TrendingUp';
-import TrendingDownIcon from '@mui/icons-material/TrendingDown';
 import AttachMoneyIcon from '@mui/icons-material/AttachMoney';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import ShowChartIcon from '@mui/icons-material/ShowChart';
 import PercentIcon from '@mui/icons-material/Percent';
 import { useQuery } from '@tanstack/react-query';
+import MetricCard from '@/components/ui/MetricCard';
+import PageHeader from '@/components/ui/PageHeader';
+import EmptyState from '@/components/ui/EmptyState';
+import TrendChart from '@/components/ui/TrendChart';
 
 interface DashboardData {
   totalRevenue: number;
@@ -40,70 +40,29 @@ interface DashboardData {
     impressions: number;
     ecpm: number;
     fillRate: number;
+    timeoutRate: number;
+  }>;
+  topPublishers: Array<{
+    name: string;
+    revenue: number;
+    impressions: number;
+    pubPayout: number;
+    ecpm: number;
   }>;
   topBundles: Array<{
     bundle: string;
     revenue: number;
     impressions: number;
   }>;
-}
-
-function MetricCard({
-  title,
-  value,
-  change,
-  icon,
-  format = 'number',
-}: {
-  title: string;
-  value: number;
-  change: number;
-  icon: React.ReactNode;
-  format?: 'currency' | 'number' | 'percent';
-}) {
-  const formatValue = (v: number) => {
-    if (format === 'currency') return `$${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-    if (format === 'percent') return `${v.toFixed(1)}%`;
-    if (v >= 1000000) return `${(v / 1000000).toFixed(1)}M`;
-    if (v >= 1000) return `${(v / 1000).toFixed(1)}K`;
-    return v.toFixed(2);
-  };
-
-  return (
-    <Card>
-      <CardContent sx={{ p: 2.5 }}>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-          <Typography variant="body2" color="text.secondary">
-            {title}
-          </Typography>
-          <Box sx={{ color: 'text.secondary', opacity: 0.5 }}>{icon}</Box>
-        </Box>
-        <Typography variant="h5" fontWeight={700}>
-          {formatValue(value)}
-        </Typography>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.5 }}>
-          {change >= 0 ? (
-            <TrendingUpIcon sx={{ fontSize: 16, color: 'success.main' }} />
-          ) : (
-            <TrendingDownIcon sx={{ fontSize: 16, color: 'error.main' }} />
-          )}
-          <Typography
-            variant="caption"
-            sx={{ color: change >= 0 ? 'success.main' : 'error.main' }}
-          >
-            {change >= 0 ? '+' : ''}{change.toFixed(1)}%
-          </Typography>
-          <Typography variant="caption" color="text.secondary">
-            vs last period
-          </Typography>
-        </Box>
-      </CardContent>
-    </Card>
-  );
+  dailyTrend: Array<{
+    date: string;
+    revenue: number;
+    impressions: number;
+  }>;
 }
 
 export default function DashboardPage() {
-  const { data, isLoading, error } = useQuery<DashboardData>({
+  const { data, isLoading } = useQuery<DashboardData>({
     queryKey: ['dashboard'],
     queryFn: async () => {
       const res = await fetch('/api/stats/dashboard');
@@ -115,9 +74,7 @@ export default function DashboardPage() {
   if (isLoading) {
     return (
       <Box>
-        <Typography variant="h4" fontWeight={700} gutterBottom>
-          Dashboard
-        </Typography>
+        <PageHeader title="Dashboard" subtitle="Last 7 days performance overview" />
         <Grid container spacing={3}>
           {[1, 2, 3, 4].map((i) => (
             <Grid size={{ xs: 12, sm: 6, md: 3 }} key={i}>
@@ -129,28 +86,15 @@ export default function DashboardPage() {
     );
   }
 
-  // Show placeholder if no data yet
   const d = data || {
-    totalRevenue: 0,
-    totalImpressions: 0,
-    avgECPM: 0,
-    fillRate: 0,
-    revenueChange: 0,
-    impressionChange: 0,
-    ecpmChange: 0,
-    fillRateChange: 0,
-    topPartners: [],
-    topBundles: [],
+    totalRevenue: 0, totalImpressions: 0, avgECPM: 0, fillRate: 0,
+    revenueChange: 0, impressionChange: 0, ecpmChange: 0, fillRateChange: 0,
+    topPartners: [], topPublishers: [], topBundles: [], dailyTrend: [],
   };
 
   return (
     <Box>
-      <Typography variant="h4" fontWeight={700} gutterBottom>
-        Dashboard
-      </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-        Performance overview across all partners and bundles
-      </Typography>
+      <PageHeader title="Dashboard" subtitle="Last 7 days performance overview" />
 
       {/* KPI Cards */}
       <Grid container spacing={3} sx={{ mb: 4 }}>
@@ -159,6 +103,7 @@ export default function DashboardPage() {
             title="Total Revenue"
             value={d.totalRevenue}
             change={d.revenueChange}
+            changeLabel="vs prev 7 days"
             icon={<AttachMoneyIcon />}
             format="currency"
           />
@@ -168,7 +113,9 @@ export default function DashboardPage() {
             title="Impressions"
             value={d.totalImpressions}
             change={d.impressionChange}
+            changeLabel="vs prev 7 days"
             icon={<VisibilityIcon />}
+            format="number"
           />
         </Grid>
         <Grid size={{ xs: 12, sm: 6, md: 3 }}>
@@ -176,6 +123,7 @@ export default function DashboardPage() {
             title="Avg eCPM"
             value={d.avgECPM}
             change={d.ecpmChange}
+            changeLabel="vs prev 7 days"
             icon={<ShowChartIcon />}
             format="currency"
           />
@@ -185,14 +133,40 @@ export default function DashboardPage() {
             title="Fill Rate"
             value={d.fillRate}
             change={d.fillRateChange}
+            changeLabel="vs prev 7 days"
             icon={<PercentIcon />}
             format="percent"
           />
         </Grid>
       </Grid>
 
-      {/* Top Partners Table */}
-      <Grid container spacing={3}>
+      {/* Daily Revenue Trend */}
+      {d.dailyTrend.length > 0 && (
+        <Card sx={{ mb: 4 }}>
+          <CardContent>
+            <Typography variant="h6" gutterBottom>
+              Daily Revenue Trend
+            </Typography>
+            <TrendChart
+              data={d.dailyTrend.map(day => ({
+                date: new Date(day.date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }),
+                revenue: day.revenue,
+                impressions: day.impressions,
+              }))}
+              xKey="date"
+              yKeys={[
+                { key: 'revenue', color: '#6366F1', name: 'Revenue' },
+                { key: 'impressions', color: '#00D9A6', name: 'Impressions' },
+              ]}
+              height={300}
+              formatTooltip={(v) => v >= 1000 ? `${(v/1000).toFixed(1)}K` : v.toLocaleString()}
+            />
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Top Partners & Publishers */}
+      <Grid container spacing={3} sx={{ mb: 4 }}>
         <Grid size={{ xs: 12, md: 7 }}>
           <Card>
             <CardContent>
@@ -200,9 +174,10 @@ export default function DashboardPage() {
                 Top Demand Partners
               </Typography>
               {d.topPartners.length === 0 ? (
-                <Typography variant="body2" color="text.secondary" sx={{ py: 4, textAlign: 'center' }}>
-                  No data yet. Click &quot;Sync Now&quot; to fetch data from Limelight.
-                </Typography>
+                <EmptyState
+                  title="No partner data yet"
+                  subtitle='Click "Sync Now" to fetch data from Limelight.'
+                />
               ) : (
                 <TableContainer>
                   <Table size="small">
@@ -210,19 +185,19 @@ export default function DashboardPage() {
                       <TableRow>
                         <TableCell>Partner</TableCell>
                         <TableCell align="right">Revenue</TableCell>
-                        <TableCell align="right">Impressions</TableCell>
+                        <TableCell align="right">Imps</TableCell>
                         <TableCell align="right">eCPM</TableCell>
-                        <TableCell align="right">Fill Rate</TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {d.topPartners.slice(0, 10).map((p, i) => (
-                        <TableRow key={i}>
-                          <TableCell>{p.name}</TableCell>
-                          <TableCell align="right">${p.revenue.toLocaleString(undefined, { maximumFractionDigits: 2 })}</TableCell>
+                      {d.topPartners.map((p, i) => (
+                        <TableRow key={i} sx={{ '&:last-child td': { borderBottom: 0 } }}>
+                          <TableCell sx={{ maxWidth: 250, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {p.name}
+                          </TableCell>
+                          <TableCell align="right">${p.revenue.toLocaleString(undefined, { maximumFractionDigits: 0 })}</TableCell>
                           <TableCell align="right">{p.impressions.toLocaleString()}</TableCell>
                           <TableCell align="right">${p.ecpm.toFixed(2)}</TableCell>
-                          <TableCell align="right">{p.fillRate.toFixed(1)}%</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -237,45 +212,92 @@ export default function DashboardPage() {
           <Card>
             <CardContent>
               <Typography variant="h6" gutterBottom>
-                Top Bundles
+                Top Publishers
               </Typography>
-              {d.topBundles.length === 0 ? (
-                <Typography variant="body2" color="text.secondary" sx={{ py: 4, textAlign: 'center' }}>
-                  No data yet.
-                </Typography>
+              {d.topPublishers.length === 0 ? (
+                <EmptyState
+                  title="No publisher data yet"
+                  subtitle="Data will appear after Limelight sync."
+                />
               ) : (
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  {d.topBundles.slice(0, 8).map((b, i) => (
-                    <Box key={i}>
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
-                        <Typography variant="body2" noWrap sx={{ maxWidth: 200 }}>
-                          {b.bundle}
-                        </Typography>
-                        <Typography variant="body2" fontWeight={600}>
-                          ${b.revenue.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                        </Typography>
-                      </Box>
-                      <LinearProgress
-                        variant="determinate"
-                        value={d.topBundles[0] ? (b.revenue / d.topBundles[0].revenue) * 100 : 0}
-                        sx={{
-                          height: 6,
-                          borderRadius: 3,
-                          bgcolor: 'rgba(255,255,255,0.05)',
-                          '& .MuiLinearProgress-bar': {
-                            borderRadius: 3,
-                            background: 'linear-gradient(90deg, #6C63FF, #00D9A6)',
-                          },
-                        }}
-                      />
-                    </Box>
-                  ))}
-                </Box>
+                <TableContainer>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Publisher</TableCell>
+                        <TableCell align="right">Revenue</TableCell>
+                        <TableCell align="right">eCPM</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {d.topPublishers.map((p, i) => (
+                        <TableRow key={i} sx={{ '&:last-child td': { borderBottom: 0 } }}>
+                          <TableCell sx={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {p.name}
+                          </TableCell>
+                          <TableCell align="right">${p.revenue.toLocaleString(undefined, { maximumFractionDigits: 0 })}</TableCell>
+                          <TableCell align="right">${p.ecpm.toFixed(2)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
               )}
             </CardContent>
           </Card>
         </Grid>
       </Grid>
+
+      {/* Top Bundles */}
+      <Card>
+        <CardContent>
+          <Typography variant="h6" gutterBottom>
+            Top Bundles by Revenue
+          </Typography>
+          {d.topBundles.length === 0 ? (
+            <EmptyState
+              title="No bundle data yet"
+              subtitle="Data will appear after Limelight sync."
+            />
+          ) : (
+            <Grid container spacing={2}>
+              {d.topBundles.map((b, i) => (
+                <Grid size={{ xs: 12, sm: 6, md: 4 }} key={i}>
+                  <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'rgba(255,255,255,0.03)' }}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+                      <Typography variant="body2" noWrap sx={{ maxWidth: 200, fontWeight: 500 }}>
+                        {b.bundle}
+                      </Typography>
+                    </Box>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <Typography variant="body2" color="primary" fontWeight={600}>
+                        ${b.revenue.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {b.impressions.toLocaleString()} imps
+                      </Typography>
+                    </Box>
+                    <LinearProgress
+                      variant="determinate"
+                      value={d.topBundles[0] ? (b.revenue / d.topBundles[0].revenue) * 100 : 0}
+                      sx={{
+                        mt: 0.5,
+                        height: 4,
+                        borderRadius: 2,
+                        bgcolor: 'rgba(255,255,255,0.05)',
+                        '& .MuiLinearProgress-bar': {
+                          borderRadius: 2,
+                          background: 'linear-gradient(90deg, #6366F1, #818CF8)',
+                        },
+                      }}
+                    />
+                  </Box>
+                </Grid>
+              ))}
+            </Grid>
+          )}
+        </CardContent>
+      </Card>
     </Box>
   );
 }

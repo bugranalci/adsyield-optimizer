@@ -31,28 +31,36 @@ export interface LimelightStatsRow {
 // ============================================
 export interface LimelightAPIResponse {
   DATE?: string;
-  DEMAND_PARTNER_NAME?: string;
-  DEMAND?: string;
-  SUPPLY_PARTNER_NAME?: string;
-  PUBLISHER?: string;
+  // DEMAND dimension fields
+  DEMAND_ID?: number;
+  DEMAND_NAME?: string;
+  DEMAND_PARTNER_NAME?: string; // Legacy CSV alias
+  DEMAND?: string; // Legacy alias
+  // PUBLISHER dimension fields
+  PUBLISHER_ID?: number;
+  PUBLISHER_NAME?: string;
+  PUBLISHER?: string; // Legacy alias
+  // Other dimensions
+  BUNDLE?: string;
+  SIZE?: string;
   AD_UNIT?: string;
   AD_UNIT_TYPE?: string;
   CHANNEL_TYPE?: string;
-  DEMAND_RULE_ID?: string;
-  DEMAND_RULE_NAME?: string;
   OS?: string;
   COUNTRY?: string;
-  SUPPLY_SOURCE?: string;
-  OPPORTUNITIES?: string | number;
-  BID_REQUESTS?: string | number;
-  BIDS?: string | number;
-  WINS?: string | number;
-  IMPRESSIONS?: string | number;
-  PUB_PAYOUT?: string | number;
-  DEMAND_PAYOUT?: string | number;
-  DEMAND_SERVICE_FEE_PAYOUT?: string | number;
-  BID_RESPONSE_TIMEOUTS?: string | number;
-  BID_RESPONSE_ERRORS?: string | number;
+  SUPPLY_SOURCE?: string; // Legacy alias for bundle
+  SUPPLY_PARTNER_NAME?: string; // Legacy CSV alias
+  // Metrics
+  OPPORTUNITIES?: number;
+  BID_REQUESTS?: number;
+  BIDS?: number;
+  WINS?: number;
+  IMPRESSIONS?: number;
+  PUB_PAYOUT?: number;
+  DEMAND_PAYOUT?: number;
+  DEMAND_SERVICE_FEE_PAYOUT?: number;
+  BID_RESPONSE_TIMEOUTS?: number;
+  BID_RESPONSE_ERRORS?: number;
 }
 
 // ============================================
@@ -341,6 +349,39 @@ export interface IVTSummary {
   dailyTrend: Array<{ date: string; total: number; suspicious: number }>;
 }
 
+export type IVTCategory = 'GIVT' | 'SIVT';
+
+export interface IVTRuleResult {
+  ruleId: string;
+  ruleName: string;
+  category: IVTCategory;
+  weight: number;
+  triggered: boolean;
+}
+
+export interface IVTAnalysisResult {
+  analyzedCount: number;
+  suspiciousCount: number;
+  batchesProcessed: number;
+  durationMs: number;
+}
+
+export interface IVTReportData {
+  summary: {
+    totalImpressions: number;
+    suspiciousImpressions: number;
+    suspiciousRate: number;
+    givtCount: number;
+    sivtCount: number;
+    analyzedCount: number;
+    unanalyzedCount: number;
+  };
+  topReasons: Array<{ reason: string; count: number }>;
+  topSuspiciousIPs: Array<{ ip: string; count: number; uniqueBundles: number }>;
+  topSuspiciousBundles: Array<{ bundle: string; count: number; suspiciousRate: number }>;
+  dailyTrend: Array<{ date: string; total: number; suspicious: number; rate: number }>;
+}
+
 // ============================================
 // Chat Types
 // ============================================
@@ -381,6 +422,26 @@ export interface AppAdsTxtResult {
   content: string | null;
   checked_at: string;
   domain?: string;
+}
+
+export interface AppAdsTxtSearchResponse {
+  results: Array<{
+    url: string;
+    domain: string;
+    found: boolean;
+  }>;
+  totalPublishers: number;
+  foundCount: number;
+  durationMs: number;
+}
+
+export interface AppAdsTxtSearchHistoryItem {
+  id: number;
+  search_line: string;
+  total_publishers: number;
+  found_count: number;
+  duration_ms: number;
+  searched_at: string;
 }
 
 // ============================================

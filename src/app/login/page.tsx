@@ -59,7 +59,7 @@ export default function LoginPage() {
         alignItems: 'center',
         justifyContent: 'center',
         bgcolor: 'background.default',
-        backgroundImage: 'radial-gradient(circle at 50% 50%, rgba(108, 99, 255, 0.08) 0%, transparent 50%)',
+        backgroundImage: 'radial-gradient(circle at 50% 50%, rgba(99, 102, 241, 0.08) 0%, transparent 50%)',
       }}
     >
       <Card sx={{ maxWidth: 420, width: '100%', mx: 2 }}>
@@ -69,7 +69,7 @@ export default function LoginPage() {
               variant="h4"
               sx={{
                 fontWeight: 800,
-                background: 'linear-gradient(135deg, #6C63FF, #00D9A6)',
+                background: 'linear-gradient(135deg, #6366F1, #818CF8)',
                 backgroundClip: 'text',
                 WebkitBackgroundClip: 'text',
                 WebkitTextFillColor: 'transparent',
@@ -118,9 +118,9 @@ export default function LoginPage() {
               disabled={loading}
               sx={{
                 py: 1.5,
-                background: 'linear-gradient(135deg, #6C63FF, #4B44B2)',
+                background: 'linear-gradient(135deg, #6366F1, #2f337d)',
                 '&:hover': {
-                  background: 'linear-gradient(135deg, #8B83FF, #6C63FF)',
+                  background: 'linear-gradient(135deg, #818CF8, #6366F1)',
                 },
               }}
             >

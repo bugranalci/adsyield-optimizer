@@ -1,14 +1,17 @@
 import { NextRequest } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
-import { createClient } from '@/lib/supabase/server';
+import { createClient, createServiceClient } from '@/lib/supabase/server';
 import { SYSTEM_PROMPT, buildPerformanceContext } from '@/lib/claude/prompts';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
+const PAGE_SIZE = 1000;
+
 export async function POST(request: NextRequest) {
   try {
+    // Cookie-based client for auth & user-scoped queries (RLS enabled)
     const supabase = await createClient();
 
     // Verify auth
@@ -54,8 +57,8 @@ export async function POST(request: NextRequest) {
       .order('created_at', { ascending: true })
       .limit(20);
 
-    // Build performance context from recent data
-    const performanceContext = await getPerformanceContext(supabase);
+    // Build performance context using service client (bypasses RLS for stats)
+    const performanceContext = await getPerformanceContext();
 
     // Build system prompt with context
     const systemPrompt = SYSTEM_PROMPT.replace('{PERFORMANCE_CONTEXT}', performanceContext);
@@ -70,7 +73,7 @@ export async function POST(request: NextRequest) {
 
     // Stream response from Claude
     const stream = anthropic.messages.stream({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-5-20250929',
       max_tokens: 2048,
       system: systemPrompt,
       messages,
@@ -125,28 +128,64 @@ export async function POST(request: NextRequest) {
   }
 }
 
-async function getPerformanceContext(supabase: any): Promise<string> {
+/**
+ * Fetches performance context using the service client (bypasses RLS).
+ * Paginates through limelight_stats since Supabase has a 1000 row limit.
+ * Also fetches unresolved alert counts.
+ */
+async function getPerformanceContext(): Promise<string> {
   try {
+    const serviceClient = createServiceClient();
+
     const endDate = new Date();
     const startDate = new Date();
     startDate.setDate(endDate.getDate() - 7);
+    const prevStartDate = new Date();
+    prevStartDate.setDate(startDate.getDate() - 7);
     const formatDate = (d: Date) => d.toISOString().split('T')[0];
 
-    const { data: stats } = await supabase
-      .from('limelight_stats')
-      .select('demand_partner_name, impressions, demand_payout, bid_requests, bid_response_timeouts')
-      .gte('date', formatDate(startDate))
-      .lte('date', formatDate(endDate));
+    // Paginate through current period stats
+    const stats = await fetchAllStats(
+      serviceClient,
+      formatDate(startDate),
+      formatDate(endDate)
+    );
+
+    // Paginate through previous period stats for revenue comparison
+    const prevStats = await fetchAllStats(
+      serviceClient,
+      formatDate(prevStartDate),
+      formatDate(startDate)
+    );
+
+    // Fetch unresolved alert counts
+    const { count: activeAlertCount } = await serviceClient
+      .from('alerts')
+      .select('*', { count: 'exact', head: true })
+      .eq('resolved', false);
+
+    const { count: criticalAlertCount } = await serviceClient
+      .from('alerts')
+      .select('*', { count: 'exact', head: true })
+      .eq('resolved', false)
+      .eq('severity', 'critical');
 
     if (!stats || stats.length === 0) {
       return 'No performance data available yet. The system needs to sync data from Limelight first.';
     }
 
+    // Current period totals
     const totalRevenue = stats.reduce((s: number, r: any) => s + Number(r.demand_payout || 0), 0);
     const totalImpressions = stats.reduce((s: number, r: any) => s + Number(r.impressions || 0), 0);
     const totalBidRequests = stats.reduce((s: number, r: any) => s + Number(r.bid_requests || 0), 0);
     const avgECPM = totalImpressions > 0 ? (totalRevenue / totalImpressions) * 1000 : 0;
     const fillRate = totalBidRequests > 0 ? (totalImpressions / totalBidRequests) * 100 : 0;
+
+    // Previous period revenue for comparison
+    const prevRevenue = prevStats.reduce((s: number, r: any) => s + Number(r.demand_payout || 0), 0);
+    const revenueChange = prevRevenue > 0
+      ? ((totalRevenue - prevRevenue) / prevRevenue) * 100
+      : 0;
 
     // Partner aggregation
     const partnerMap = new Map<string, { revenue: number; impressions: number; bidRequests: number; timeouts: number }>();
@@ -168,23 +207,70 @@ async function getPerformanceContext(supabase: any): Promise<string> {
       timeoutRate: s.bidRequests > 0 ? (s.timeouts / s.bidRequests) * 100 : 0,
     }));
 
-    const topPartners = allPartners.sort((a, b) => b.revenue - a.revenue).slice(0, 5);
-    const worstPartners = allPartners.filter(p => p.ecpm < 1 || p.timeoutRate > 15).slice(0, 5);
+    // Top 5 by revenue
+    const topPartners = [...allPartners]
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 5);
+
+    // Worst 5: low eCPM or high timeout rate
+    const worstPartners = [...allPartners]
+      .filter(p => p.ecpm < 1 || p.timeoutRate > 15)
+      .sort((a, b) => a.ecpm - b.ecpm)
+      .slice(0, 5);
 
     return buildPerformanceContext({
       totalRevenue,
       totalImpressions,
       avgECPM,
       fillRate,
-      revenueChange: 0, // Would need historical comparison
+      revenueChange,
       topPartners,
       worstPartners,
-      activeAlerts: 0,
-      criticalAlerts: 0,
+      activeAlerts: activeAlertCount || 0,
+      criticalAlerts: criticalAlertCount || 0,
       topOpportunities: [],
     });
   } catch (error) {
     console.error('Error building performance context:', error);
     return 'Error loading performance data.';
   }
+}
+
+/**
+ * Paginates through limelight_stats to fetch all rows for a date range.
+ * Supabase enforces a max of 1000 rows per request.
+ */
+async function fetchAllStats(
+  client: ReturnType<typeof createServiceClient>,
+  startDate: string,
+  endDate: string
+): Promise<any[]> {
+  const allRows: any[] = [];
+  let offset = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    const { data, error } = await client
+      .from('limelight_stats')
+      .select('demand_partner_name, impressions, demand_payout, bid_requests, bid_response_timeouts')
+      .gte('date', startDate)
+      .lte('date', endDate)
+      .range(offset, offset + PAGE_SIZE - 1);
+
+    if (error) {
+      console.error('Error fetching limelight_stats page:', error);
+      break;
+    }
+
+    if (data && data.length > 0) {
+      allRows.push(...data);
+      offset += PAGE_SIZE;
+      // If we got fewer rows than PAGE_SIZE, there are no more pages
+      hasMore = data.length === PAGE_SIZE;
+    } else {
+      hasMore = false;
+    }
+  }
+
+  return allRows;
 }

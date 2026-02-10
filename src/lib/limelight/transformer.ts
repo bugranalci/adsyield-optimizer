@@ -1,19 +1,15 @@
 import { LimelightAPIResponse } from '@/types';
 
-/**
- * Transform Limelight API response into database-ready rows.
- * Handles string-to-number conversion and null safety.
- */
-export function transformLimelightResponse(rows: LimelightAPIResponse[]): Array<{
+export interface TransformedRow {
   date: string;
-  demand_partner_name: string | null;
-  supply_partner_name: string | null;
-  publisher: string | null;
-  bundle: string | null;
-  ad_unit_type: string | null;
-  channel_type: string | null;
-  os: string | null;
-  country: string | null;
+  demand_partner_name: string;
+  supply_partner_name: string;
+  publisher: string;
+  bundle: string;
+  ad_unit_type: string;
+  channel_type: string;
+  os: string;
+  country: string;
   opportunities: number;
   bid_requests: number;
   bids: number;
@@ -24,19 +20,45 @@ export function transformLimelightResponse(rows: LimelightAPIResponse[]): Array<
   demand_service_fee: number;
   bid_response_timeouts: number;
   bid_response_errors: number;
-}> {
+}
+
+/**
+ * Transform Limelight API response into database-ready rows.
+ *
+ * API field names (from actual API testing):
+ * - DEMAND dimension: DEMAND_ID, DEMAND_NAME
+ * - PUBLISHER dimension: PUBLISHER_ID, PUBLISHER_NAME
+ * - BUNDLE dimension: BUNDLE
+ * - OS dimension: OS
+ * - COUNTRY dimension: COUNTRY
+ * - SIZE dimension: SIZE
+ * - CHANNEL_TYPE dimension: CHANNEL_TYPE
+ *
+ * All unique constraint columns use '' instead of null to avoid
+ * PostgreSQL NULL != NULL issue in UNIQUE constraints.
+ */
+export function transformLimelightResponse(rows: LimelightAPIResponse[]): TransformedRow[] {
   return rows
-    .filter((row) => row.DATE) // Must have a date
+    .filter((row) => row.DATE)
     .map((row) => ({
       date: row.DATE!,
-      demand_partner_name: row.DEMAND_PARTNER_NAME || row.DEMAND || null,
-      supply_partner_name: row.SUPPLY_PARTNER_NAME || null,
-      publisher: row.PUBLISHER || null,
-      bundle: row.SUPPLY_SOURCE || null,
-      ad_unit_type: row.AD_UNIT_TYPE || row.AD_UNIT || null,
-      channel_type: row.CHANNEL_TYPE || null,
-      os: row.OS || null,
-      country: row.COUNTRY || null,
+      // DEMAND dimension returns DEMAND_NAME
+      demand_partner_name: row.DEMAND_NAME || row.DEMAND_PARTNER_NAME || '',
+      // No separate supply partner in API - publisher is the supply side
+      supply_partner_name: '',
+      // PUBLISHER dimension returns PUBLISHER_NAME
+      publisher: row.PUBLISHER_NAME || row.PUBLISHER || '',
+      // BUNDLE dimension returns BUNDLE
+      bundle: row.BUNDLE || row.SUPPLY_SOURCE || '',
+      // SIZE dimension returns SIZE (maps to ad_unit_type)
+      ad_unit_type: row.SIZE || row.AD_UNIT_TYPE || row.AD_UNIT || '',
+      // CHANNEL_TYPE dimension returns CHANNEL_TYPE
+      channel_type: row.CHANNEL_TYPE || '',
+      // OS dimension
+      os: row.OS || '',
+      // COUNTRY dimension
+      country: row.COUNTRY || '',
+      // Metrics
       opportunities: toNumber(row.OPPORTUNITIES),
       bid_requests: toNumber(row.BID_REQUESTS),
       bids: toNumber(row.BIDS),
@@ -52,7 +74,7 @@ export function transformLimelightResponse(rows: LimelightAPIResponse[]): Array<
 
 function toNumber(val: string | number | undefined): number {
   if (val === undefined || val === null || val === '') return 0;
-  const n = typeof val === 'string' ? parseInt(val, 10) : val;
+  const n = typeof val === 'string' ? parseInt(val, 10) : Math.round(val);
   return isNaN(n) ? 0 : n;
 }
 

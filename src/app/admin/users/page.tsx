@@ -148,8 +148,8 @@ export default function AdminUsersPage() {
           startIcon={<PersonAddIcon />}
           onClick={() => setDialogOpen(true)}
           sx={{
-            background: 'linear-gradient(135deg, #6C63FF, #4B44B2)',
-            '&:hover': { background: 'linear-gradient(135deg, #8B83FF, #6C63FF)' },
+            background: 'linear-gradient(135deg, #6366F1, #2f337d)',
+            '&:hover': { background: 'linear-gradient(135deg, #818CF8, #6366F1)' },
           }}
         >
           Add User

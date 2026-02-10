@@ -13,22 +13,24 @@ export async function GET(request: NextRequest) {
   try {
     const params = request.nextUrl.searchParams;
 
+    // Accept both PRD short params (ts, pub, ua, make, model, crid, ssp, imp)
+    // and legacy long params (timestamp, pubId, userAgent, deviceMake, etc.)
     const impression = {
-      timestamp: params.get('timestamp') || new Date().toISOString(),
-      pub_id: params.get('pubId') || null,
+      timestamp: params.get('ts') || params.get('timestamp') || new Date().toISOString(),
+      pub_id: params.get('pub') || params.get('pubId') || null,
       bundle: params.get('bundle') || null,
       ifa: params.get('ifa') || null,
       ip: params.get('ip') || request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || null,
-      user_agent: params.get('userAgent') || request.headers.get('user-agent') || null,
-      device_make: params.get('deviceMake') || null,
-      device_model: params.get('deviceModel') || null,
+      user_agent: params.get('ua') || params.get('userAgent') || request.headers.get('user-agent') || null,
+      device_make: params.get('make') || params.get('deviceMake') || null,
+      device_model: params.get('model') || params.get('deviceModel') || null,
       os: params.get('os') || null,
       os_version: params.get('osv') || null,
-      creative_id: params.get('creativeId') || null,
-      origin_ssp_pub_id: params.get('originSspPubId') || null,
+      creative_id: params.get('crid') || params.get('creativeId') || null,
+      origin_ssp_pub_id: params.get('ssp') || params.get('originSspPubId') || null,
       lat: params.get('lat') ? parseFloat(params.get('lat')!) : null,
       lon: params.get('lon') ? parseFloat(params.get('lon')!) : null,
-      imp_id: params.get('impId') || null,
+      imp_id: params.get('imp') || params.get('impId') || null,
     };
 
     // Fire and forget: insert asynchronously, don't block the pixel response

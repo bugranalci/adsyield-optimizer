@@ -101,7 +101,7 @@ export default function Sidebar() {
           variant="h5"
           sx={{
             fontWeight: 800,
-            background: 'linear-gradient(135deg, #6C63FF, #00D9A6)',
+            background: 'linear-gradient(135deg, #6366F1, #818CF8)',
             backgroundClip: 'text',
             WebkitBackgroundClip: 'text',
             WebkitTextFillColor: 'transparent',
@@ -147,10 +147,10 @@ export default function Sidebar() {
                     borderRadius: 1.5,
                     mx: 0.5,
                     py: 0.8,
-                    bgcolor: isActive ? 'rgba(108, 99, 255, 0.12)' : 'transparent',
+                    bgcolor: isActive ? 'rgba(99, 102, 241, 0.12)' : 'transparent',
                     color: isActive ? 'primary.main' : 'text.secondary',
                     '&:hover': {
-                      bgcolor: isActive ? 'rgba(108, 99, 255, 0.16)' : 'rgba(255,255,255,0.04)',
+                      bgcolor: isActive ? 'rgba(99, 102, 241, 0.16)' : 'rgba(255,255,255,0.04)',
                     },
                   }}
                 >
@@ -198,10 +198,10 @@ export default function Sidebar() {
                   borderRadius: 1.5,
                   mx: 0.5,
                   py: 0.8,
-                  bgcolor: pathname === '/admin/users' ? 'rgba(108, 99, 255, 0.12)' : 'transparent',
+                  bgcolor: pathname === '/admin/users' ? 'rgba(99, 102, 241, 0.12)' : 'transparent',
                   color: pathname === '/admin/users' ? 'primary.main' : 'text.secondary',
                   '&:hover': {
-                    bgcolor: pathname === '/admin/users' ? 'rgba(108, 99, 255, 0.16)' : 'rgba(255,255,255,0.04)',
+                    bgcolor: pathname === '/admin/users' ? 'rgba(99, 102, 241, 0.16)' : 'rgba(255,255,255,0.04)',
                   },
                 }}
               >

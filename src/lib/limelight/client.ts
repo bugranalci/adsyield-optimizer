@@ -4,16 +4,14 @@ const LIMELIGHT_API_URL = process.env.LIMELIGHT_API_URL || 'http://stats.project
 const CLIENT_KEY = process.env.LIMELIGHT_CLIENT_KEY || '';
 const SECRET_KEY = process.env.LIMELIGHT_SECRET_KEY || '';
 
-const ALL_DIMENSIONS = [
-  'DATE',
-  'DEMAND_PARTNER_NAME',
-  'SUPPLY_PARTNER_NAME',
-  'PUBLISHER',
-  'AD_UNIT_TYPE',
-  'CHANNEL_TYPE',
-  'OS',
-  'COUNTRY',
-];
+// Core dimensions for daily sync (stored in DB)
+// DEMAND returns: DEMAND_ID, DEMAND_NAME
+// PUBLISHER returns: PUBLISHER_ID, PUBLISHER_NAME
+export const SYNC_DIMENSIONS = ['DATE', 'DEMAND', 'PUBLISHER'];
+
+// Additional dimensions available for on-demand queries
+// BUNDLE, OS, COUNTRY, SIZE, CHANNEL_TYPE
+export const ON_DEMAND_DIMENSIONS = ['BUNDLE', 'OS', 'COUNTRY', 'SIZE', 'CHANNEL_TYPE'];
 
 const ALL_METRICS = [
   'OPPORTUNITIES',
@@ -40,7 +38,7 @@ export async function fetchLimelightStats(params: FetchStatsParams): Promise<Lim
   const {
     startDate,
     endDate,
-    dimensions = ALL_DIMENSIONS,
+    dimensions = SYNC_DIMENSIONS,
     metrics = ALL_METRICS,
     output = 'json',
   } = params;
@@ -54,36 +52,39 @@ export async function fetchLimelightStats(params: FetchStatsParams): Promise<Lim
   url.searchParams.set('metrics', metrics.join(','));
   url.searchParams.set('output', output);
 
+  console.log(`[Limelight] Fetching: ${startDate} to ${endDate}, dimensions: ${dimensions.join(',')}`);
+
   const response = await fetch(url.toString(), {
     method: 'GET',
     headers: {
       'Accept': 'application/json',
     },
-    // No caching for fresh data
     cache: 'no-store',
   });
 
   if (!response.ok) {
-    throw new Error(`Limelight API error: ${response.status} ${response.statusText}`);
+    throw new Error(`Limelight API HTTP error: ${response.status} ${response.statusText}`);
   }
 
   const data = await response.json();
 
-  // Limelight might return the data in different formats
-  // Handle both array and object responses
+  // Check for API-level errors
+  if (data.status === 'FAILED') {
+    throw new Error(`Limelight API error: ${data.body || 'Unknown error'}`);
+  }
+
+  // SUCCESS response: data is in data.body
+  if (data.status === 'SUCCESS' && Array.isArray(data.body)) {
+    console.log(`[Limelight] Received ${data.body.length} rows`);
+    return data.body;
+  }
+
+  // Fallback: direct array
   if (Array.isArray(data)) {
     return data;
   }
 
-  if (data.data && Array.isArray(data.data)) {
-    return data.data;
-  }
-
-  // If single object, wrap in array
-  if (typeof data === 'object' && data !== null) {
-    return [data];
-  }
-
+  console.warn('[Limelight] Unexpected response format:', typeof data);
   return [];
 }
 
