@@ -30,15 +30,13 @@ export async function POST(request: NextRequest) {
 
     // Case 1: Reset to defaults
     if (body.action === 'reset_defaults') {
-      // Delete all existing publishers
       const { error: deleteError } = await supabase
         .from('publisher_domains')
         .delete()
-        .neq('id', 0); // Delete all rows
+        .neq('id', 0);
 
       if (deleteError) throw deleteError;
 
-      // Insert all defaults
       const rows = DEFAULT_PUBLISHERS.map((url) => ({
         domain: extractDomain(url),
         url,
@@ -58,13 +56,48 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Case 2: Bulk add URLs
+    // Case 2: Clear all publishers
+    if (body.action === 'clear_all') {
+      const { error: deleteError } = await supabase
+        .from('publisher_domains')
+        .delete()
+        .neq('id', 0);
+
+      if (deleteError) throw deleteError;
+
+      return NextResponse.json({
+        success: true,
+        message: 'All publishers cleared',
+      });
+    }
+
+    // Case 3: Bulk add URLs
     if (body.urls && Array.isArray(body.urls)) {
-      const rows = body.urls.map((url: string) => ({
-        domain: extractDomain(url),
-        url,
-        status: 'active' as const,
-      }));
+      // Normalize URLs: ensure they have protocol and /app-ads.txt
+      const rows = body.urls
+        .map((url: string) => {
+          let normalized = url.trim();
+          if (!normalized) return null;
+          if (!normalized.startsWith('http://') && !normalized.startsWith('https://')) {
+            normalized = 'https://' + normalized;
+          }
+          if (!normalized.endsWith('/app-ads.txt')) {
+            normalized = normalized.replace(/\/?$/, '/app-ads.txt');
+          }
+          return {
+            domain: extractDomain(normalized),
+            url: normalized,
+            status: 'active' as const,
+          };
+        })
+        .filter(Boolean);
+
+      if (rows.length === 0) {
+        return NextResponse.json(
+          { error: 'No valid URLs provided' },
+          { status: 400 }
+        );
+      }
 
       const { data, error } = await supabase
         .from('publisher_domains')
@@ -80,14 +113,19 @@ export async function POST(request: NextRequest) {
       }, { status: 201 });
     }
 
-    // Case 3: Add single URL
+    // Case 4: Add single URL
     if (body.url && typeof body.url === 'string') {
+      let normalized = body.url.trim();
+      if (!normalized.startsWith('http://') && !normalized.startsWith('https://')) {
+        normalized = 'https://' + normalized;
+      }
+
       const { data, error } = await supabase
         .from('publisher_domains')
         .upsert(
           {
-            domain: extractDomain(body.url),
-            url: body.url,
+            domain: extractDomain(normalized),
+            url: normalized,
             status: 'active' as const,
           },
           { onConflict: 'domain' }
@@ -117,19 +155,27 @@ export async function DELETE(request: NextRequest) {
   try {
     const supabase = createServiceClient();
     const { searchParams } = new URL(request.url);
+
+    // Support both id and url for deletion
+    const id = searchParams.get('id');
     const url = searchParams.get('url');
 
-    if (!url) {
+    if (!id && !url) {
       return NextResponse.json(
-        { error: 'url query parameter is required' },
+        { error: 'id or url query parameter is required' },
         { status: 400 }
       );
     }
 
-    const { error } = await supabase
-      .from('publisher_domains')
-      .delete()
-      .eq('url', url);
+    let query = supabase.from('publisher_domains').delete();
+
+    if (id) {
+      query = query.eq('id', parseInt(id, 10));
+    } else if (url) {
+      query = query.eq('url', url);
+    }
+
+    const { error } = await query;
 
     if (error) throw error;
 

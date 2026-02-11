@@ -193,9 +193,9 @@ export default function AppAdsTxtPage() {
     setBulkDialogOpen(false);
   };
 
-  const handleDeletePublisher = async (url: string) => {
+  const handleDeletePublisher = async (id: number) => {
     try {
-      const res = await fetch(`/api/app-ads-txt/publishers?url=${encodeURIComponent(url)}`, {
+      const res = await fetch(`/api/app-ads-txt/publishers?id=${id}`, {
         method: 'DELETE',
       });
       if (res.ok) {
@@ -656,7 +656,7 @@ export default function AppAdsTxtPage() {
                       <Tooltip title="Delete publisher">
                         <IconButton
                           size="small"
-                          onClick={() => handleDeletePublisher(pub.url)}
+                          onClick={() => handleDeletePublisher(pub.id)}
                           sx={{ color: 'text.secondary', '&:hover': { color: '#FF5252' } }}
                         >
                           <DeleteOutlineIcon fontSize="small" />
