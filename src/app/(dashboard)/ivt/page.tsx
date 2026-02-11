@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Box,
   Grid,
@@ -19,6 +19,12 @@ import {
   Button,
   CircularProgress,
   Chip,
+  Select,
+  MenuItem as MuiMenuItem,
+  FormControl,
+  InputLabel,
+  Menu,
+  MenuItem,
 } from '@mui/material';
 import SecurityIcon from '@mui/icons-material/Security';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
@@ -29,6 +35,7 @@ import ReportProblemIcon from '@mui/icons-material/ReportProblem';
 import PercentIcon from '@mui/icons-material/Percent';
 import BugReportIcon from '@mui/icons-material/BugReport';
 import PsychologyIcon from '@mui/icons-material/Psychology';
+import DownloadIcon from '@mui/icons-material/Download';
 import { useQuery } from '@tanstack/react-query';
 import {
   LineChart,
@@ -55,12 +62,27 @@ function getRateColor(rate: number): string {
 
 export default function IVTPage() {
   const [period, setPeriod] = useState(7);
+  const [publisher, setPublisher] = useState<string>('');
+  const [publisherList, setPublisherList] = useState<string[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [exportAnchor, setExportAnchor] = useState<null | HTMLElement>(null);
+
+  // Fetch publisher list for dropdown
+  useEffect(() => {
+    fetch('/api/ivt/report?publishers_list=true')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.publishers) setPublisherList(data.publishers);
+      })
+      .catch(() => {});
+  }, []);
 
   const { data, isLoading, isError, refetch } = useQuery<IVTReportData>({
-    queryKey: ['ivt-report', period],
+    queryKey: ['ivt-report', period, publisher],
     queryFn: async () => {
-      const res = await fetch(`/api/ivt/report?period=${period}`);
+      const params = new URLSearchParams({ period: String(period) });
+      if (publisher) params.set('publisher', publisher);
+      const res = await fetch(`/api/ivt/report?${params}`);
       if (!res.ok) throw new Error('Failed');
       return res.json();
     },
@@ -80,13 +102,26 @@ export default function IVTPage() {
     }
   };
 
+  const handleExportSummary = () => {
+    setExportAnchor(null);
+    const params = new URLSearchParams({ period: String(period), format: 'csv' });
+    if (publisher) params.set('publisher', publisher);
+    window.open(`/api/ivt/report?${params}`, '_blank');
+  };
+
+  const handleExportImpressions = () => {
+    setExportAnchor(null);
+    const params = new URLSearchParams({ period: String(period), export: 'impressions' });
+    if (publisher) params.set('publisher', publisher);
+    window.open(`/api/ivt/report?${params}`, '_blank');
+  };
+
   // ---- Loading state ----
   if (isLoading) {
     return (
       <Box>
         <PageHeader title="IVT Monitoring" subtitle="Invalid Traffic detection and analysis" />
 
-        {/* Skeleton KPI cards */}
         <Grid container spacing={3} sx={{ mb: 4 }}>
           {[1, 2, 3, 4, 5].map((i) => (
             <Grid size={{ xs: 12, sm: 6, md: 2.4 }} key={i}>
@@ -95,10 +130,8 @@ export default function IVTPage() {
           ))}
         </Grid>
 
-        {/* Skeleton chart */}
         <Skeleton variant="rounded" height={360} sx={{ mb: 4 }} />
 
-        {/* Skeleton columns */}
         <Grid container spacing={3} sx={{ mb: 4 }}>
           <Grid size={{ xs: 12, md: 7 }}>
             <Skeleton variant="rounded" height={360} />
@@ -108,7 +141,6 @@ export default function IVTPage() {
           </Grid>
         </Grid>
 
-        {/* Skeleton tables */}
         <Skeleton variant="rounded" height={300} sx={{ mb: 3 }} />
         <Skeleton variant="rounded" height={300} />
       </Box>
@@ -148,7 +180,7 @@ export default function IVTPage() {
   };
 
   // ---- Empty state ----
-  if (d.summary.totalImpressions === 0) {
+  if (d.summary.totalImpressions === 0 && !publisher) {
     return (
       <Box>
         <PageHeader title="IVT Monitoring" subtitle="Invalid Traffic detection and analysis" />
@@ -166,7 +198,25 @@ export default function IVTPage() {
   return (
     <Box>
       {/* ---- Header ---- */}
-      <PageHeader title="IVT Monitoring" subtitle={`Invalid Traffic detection and analysis -- Last ${period} days`}>
+      <PageHeader title="IVT Monitoring" subtitle={`Invalid Traffic detection and analysis -- Last ${period} days${publisher ? ` -- Publisher: ${publisher}` : ''}`}>
+        {/* Publisher filter */}
+        {publisherList.length > 0 && (
+          <FormControl size="small" sx={{ minWidth: 160 }}>
+            <InputLabel sx={{ fontSize: '0.8rem' }}>Publisher</InputLabel>
+            <Select
+              value={publisher}
+              onChange={(e) => setPublisher(e.target.value)}
+              label="Publisher"
+              sx={{ fontSize: '0.8rem' }}
+            >
+              <MuiMenuItem value="">All Publishers</MuiMenuItem>
+              {publisherList.map((p) => (
+                <MuiMenuItem key={p} value={p}>{p}</MuiMenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        )}
+
         <ToggleButtonGroup
           value={period}
           exclusive
@@ -185,6 +235,25 @@ export default function IVTPage() {
           <ToggleButton value={14}>14D</ToggleButton>
           <ToggleButton value={30}>30D</ToggleButton>
         </ToggleButtonGroup>
+
+        {/* Export dropdown */}
+        <Button
+          variant="outlined"
+          startIcon={<DownloadIcon />}
+          onClick={(e) => setExportAnchor(e.currentTarget)}
+          sx={{ textTransform: 'none', fontSize: '0.8rem' }}
+        >
+          Export CSV
+        </Button>
+        <Menu
+          anchorEl={exportAnchor}
+          open={Boolean(exportAnchor)}
+          onClose={() => setExportAnchor(null)}
+        >
+          <MenuItem onClick={handleExportSummary}>Export Summary</MenuItem>
+          <MenuItem onClick={handleExportImpressions}>Export All Impressions</MenuItem>
+        </Menu>
+
         <Button
           variant="contained"
           startIcon={isAnalyzing ? <CircularProgress size={16} color="inherit" /> : <PlayArrowIcon />}

@@ -56,6 +56,7 @@ const navItems: NavItem[] = [
   { label: 'Alerts', path: '/alerts', icon: <NotificationsIcon /> },
   { label: 'IVT Monitoring', path: '/ivt', icon: <ShieldIcon />, section: 'Tools' },
   { label: 'App-Ads.txt', path: '/app-ads-txt', icon: <DescriptionIcon /> },
+  { label: 'Ads.txt', path: '/ads-txt', icon: <DescriptionIcon /> },
 ];
 
 export default function Sidebar() {
