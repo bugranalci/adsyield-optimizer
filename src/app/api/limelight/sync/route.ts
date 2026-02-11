@@ -3,6 +3,12 @@ import { createServiceClient } from '@/lib/supabase/server';
 import { fetchLimelightStats, getYesterdayDate, getDateRange, SYNC_DIMENSIONS } from '@/lib/limelight/client';
 import { transformLimelightResponse } from '@/lib/limelight/transformer';
 
+// Allow up to 300s for sync (Vercel Pro max)
+export const maxDuration = 300;
+
+// Safety margin: stop processing 10s before maxDuration to flush results
+const SAFE_TIMEOUT_MS = 280_000;
+
 // POST - Manual sync (from UI "Sync Now" button)
 export async function POST(request: NextRequest) {
   try {
@@ -63,8 +69,67 @@ export async function GET(request: NextRequest) {
   }
 }
 
+/**
+ * Generate array of date strings between start and end (inclusive).
+ */
+function getDatesBetween(startDate: string, endDate: string): string[] {
+  const dates: string[] = [];
+  const current = new Date(startDate + 'T00:00:00Z');
+  const end = new Date(endDate + 'T00:00:00Z');
+  while (current <= end) {
+    dates.push(current.toISOString().split('T')[0]);
+    current.setUTCDate(current.getUTCDate() + 1);
+  }
+  return dates;
+}
+
+/**
+ * Sync a single day's data from Limelight.
+ */
+async function syncSingleDay(
+  supabase: ReturnType<typeof createServiceClient>,
+  day: string
+): Promise<{ synced: number; errors: number }> {
+  const rawData = await fetchLimelightStats({
+    startDate: day,
+    endDate: day,
+    dimensions: SYNC_DIMENSIONS,
+  });
+
+  const transformed = transformLimelightResponse(rawData);
+  if (transformed.length === 0) {
+    return { synced: 0, errors: 0 };
+  }
+
+  const BATCH_SIZE = 500;
+  let synced = 0;
+  let errors = 0;
+
+  for (let i = 0; i < transformed.length; i += BATCH_SIZE) {
+    const batch = transformed.slice(i, i + BATCH_SIZE);
+
+    const { error: upsertError } = await supabase
+      .from('limelight_stats')
+      .upsert(batch, {
+        onConflict: 'date,demand_partner_name,supply_partner_name,publisher,bundle,ad_unit_type,os,country',
+        ignoreDuplicates: false,
+      });
+
+    if (upsertError) {
+      console.error(`[Sync] Upsert error on ${day}:`, upsertError.message);
+      errors++;
+      continue;
+    }
+
+    synced += batch.length;
+  }
+
+  return { synced, errors };
+}
+
 async function performSync(startDate: string, endDate: string) {
   const supabase = createServiceClient();
+  const functionStart = Date.now();
 
   // Log sync start
   const { data: syncLog } = await supabase
@@ -79,56 +144,33 @@ async function performSync(startDate: string, endDate: string) {
     .single();
 
   try {
-    // Fetch from Limelight API using core sync dimensions (DATE, DEMAND, PUBLISHER)
-    console.log(`[Sync] Starting: ${startDate} to ${endDate}`);
-    const rawData = await fetchLimelightStats({
-      startDate,
-      endDate,
-      dimensions: SYNC_DIMENSIONS,
-    });
+    // Process day-by-day to avoid timeouts from large BUNDLE dimension data
+    const days = getDatesBetween(startDate, endDate);
+    console.log(`[Sync] Starting: ${startDate} to ${endDate} (${days.length} days)`);
 
-    const transformed = transformLimelightResponse(rawData);
-
-    if (transformed.length === 0) {
-      if (syncLog) {
-        await supabase
-          .from('sync_logs')
-          .update({
-            rows_synced: 0,
-            status: 'completed',
-            completed_at: new Date().toISOString(),
-          })
-          .eq('id', syncLog.id);
-      }
-
-      return { success: true, rowsSynced: 0, message: 'No data returned from Limelight' };
-    }
-
-    // Upsert in batches (Supabase has row limits per request)
-    const BATCH_SIZE = 500;
     let totalSynced = 0;
-    let errorCount = 0;
+    let totalErrors = 0;
+    let daysProcessed = 0;
+    let timedOut = false;
 
-    for (let i = 0; i < transformed.length; i += BATCH_SIZE) {
-      const batch = transformed.slice(i, i + BATCH_SIZE);
-
-      const { error: upsertError } = await supabase
-        .from('limelight_stats')
-        .upsert(batch, {
-          onConflict: 'date,demand_partner_name,supply_partner_name,publisher,bundle,ad_unit_type,os,country',
-          ignoreDuplicates: false,
-        });
-
-      if (upsertError) {
-        console.error(`[Sync] Upsert batch ${Math.floor(i / BATCH_SIZE) + 1} error:`, upsertError.message);
-        errorCount++;
-        continue;
+    for (const day of days) {
+      // Safety check: bail out before Vercel function timeout
+      if (Date.now() - functionStart > SAFE_TIMEOUT_MS) {
+        console.warn(`[Sync] Approaching timeout after ${daysProcessed} days. Stopping gracefully.`);
+        timedOut = true;
+        break;
       }
 
-      totalSynced += batch.length;
+      console.log(`[Sync] Processing ${day}...`);
+      const result = await syncSingleDay(supabase, day);
+      totalSynced += result.synced;
+      totalErrors += result.errors;
+      daysProcessed++;
+      console.log(`[Sync] ${day}: ${result.synced} rows synced`);
     }
 
-    console.log(`[Sync] Done: ${totalSynced} rows synced, ${errorCount} errors`);
+    const durationMs = Date.now() - functionStart;
+    console.log(`[Sync] Done: ${totalSynced} rows synced, ${totalErrors} errors, ${daysProcessed}/${days.length} days in ${durationMs}ms`);
 
     // Update sync log
     if (syncLog) {
@@ -136,8 +178,10 @@ async function performSync(startDate: string, endDate: string) {
         .from('sync_logs')
         .update({
           rows_synced: totalSynced,
-          status: 'completed',
-          error_message: errorCount > 0 ? `${errorCount} batch(es) had errors` : null,
+          status: timedOut ? 'completed' : 'completed',
+          error_message: timedOut
+            ? `Processed ${daysProcessed}/${days.length} days before timeout. Re-run to continue.`
+            : totalErrors > 0 ? `${totalErrors} batch(es) had errors` : null,
           completed_at: new Date().toISOString(),
         })
         .eq('id', syncLog.id);
@@ -146,8 +190,11 @@ async function performSync(startDate: string, endDate: string) {
     return {
       success: true,
       rowsSynced: totalSynced,
-      totalRows: transformed.length,
-      errors: errorCount,
+      daysProcessed,
+      totalDays: days.length,
+      errors: totalErrors,
+      timedOut,
+      durationMs,
       dateRange: { startDate, endDate },
     };
   } catch (error: unknown) {
