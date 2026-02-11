@@ -9,6 +9,7 @@ export const maxDuration = 300;
 // Safety margin: stop processing 10s before maxDuration to flush results
 const SAFE_TIMEOUT_MS = 280_000;
 
+
 // POST - Manual sync (from UI "Sync Now" button)
 export async function POST(request: NextRequest) {
   try {
