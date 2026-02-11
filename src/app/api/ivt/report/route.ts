@@ -34,11 +34,25 @@ export async function GET(request: NextRequest) {
     // Return distinct publisher (pub_id) list for dropdown directly from IVT data
     if (searchParams.get('publishers_list') === 'true') {
       const supabase = createServiceClient();
+
+      // Use RPC for efficient DB-side DISTINCT (no row limit issues)
+      try {
+        const { data: rpcData, error: rpcError } = await supabase.rpc('get_distinct_ivt_publishers');
+        if (!rpcError && rpcData) {
+          const publishers = rpcData.map((r: { pub_id: string }) => r.pub_id).filter(Boolean);
+          return NextResponse.json({ publishers });
+        }
+      } catch {
+        // RPC not available yet, fall through to fallback
+      }
+
+      // Fallback: high-limit select + JS dedup
       const { data, error } = await supabase
         .from('ivt_impressions')
         .select('pub_id')
         .not('pub_id', 'is', null)
-        .neq('pub_id', '');
+        .neq('pub_id', '')
+        .limit(50000);
 
       if (error) throw error;
 

@@ -130,3 +130,14 @@ AS $$
   ORDER BY suspicious_count DESC
   LIMIT lim
 $$;
+
+-- 7. get_distinct_ivt_publishers: Distinct pub_ids for IVT dropdown
+CREATE OR REPLACE FUNCTION get_distinct_ivt_publishers()
+RETURNS TABLE(pub_id TEXT)
+LANGUAGE sql STABLE
+AS $$
+  SELECT DISTINCT pub_id
+  FROM ivt_impressions
+  WHERE pub_id IS NOT NULL AND pub_id != ''
+  ORDER BY pub_id
+$$;
