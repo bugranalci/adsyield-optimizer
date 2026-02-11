@@ -7,7 +7,8 @@ const SECRET_KEY = process.env.LIMELIGHT_SECRET_KEY || '';
 // Core dimensions for daily sync (stored in DB)
 // DEMAND returns: DEMAND_ID, DEMAND_NAME
 // PUBLISHER returns: PUBLISHER_ID, PUBLISHER_NAME
-export const SYNC_DIMENSIONS = ['DATE', 'DEMAND', 'PUBLISHER'];
+// BUNDLE is required for publisher → bundle resolution in IVT reports
+export const SYNC_DIMENSIONS = ['DATE', 'DEMAND', 'PUBLISHER', 'BUNDLE'];
 
 // Additional dimensions available for on-demand queries
 // BUNDLE, OS, COUNTRY, SIZE, CHANNEL_TYPE

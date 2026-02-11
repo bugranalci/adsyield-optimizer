@@ -64,7 +64,9 @@ export async function GET(request: NextRequest) {
     const startDate = startDateObj.toISOString();
 
     // ---- Resolve publisher → bundles (via limelight_stats) ----
+    // Also resolve publisher_id for direct pub_id filtering as fallback
     let publisherBundles: string[] | null = null;
+    let publisherIds: string[] | null = null;
     if (publisher) {
       const { data: bundleRows, error: bundleErr } = await supabase
         .from('limelight_stats')
@@ -76,18 +78,36 @@ export async function GET(request: NextRequest) {
       if (bundleErr) throw bundleErr;
 
       publisherBundles = [...new Set((bundleRows || []).map((r) => r.bundle).filter(Boolean))];
+
+      // If no bundles found via limelight_stats, try direct pub_id match
+      // The publisher dropdown value might be a name or an ID
       if (publisherBundles.length === 0) {
-        // No bundles found for this publisher — return empty report
-        const emptyReport: IVTReportData = {
-          summary: { totalImpressions: 0, suspiciousImpressions: 0, suspiciousRate: 0, givtCount: 0, sivtCount: 0, analyzedCount: 0, unanalyzedCount: 0 },
-          topReasons: [],
-          topSuspiciousIPs: [],
-          topSuspiciousBundles: [],
-          dailyTrend: [],
-        };
-        return NextResponse.json(emptyReport);
+        // Check if ivt_impressions has data with this publisher as pub_id
+        const { count: directCount } = await supabase
+          .from('ivt_impressions')
+          .select('*', { count: 'exact', head: true })
+          .eq('pub_id', publisher)
+          .gte('created_at', startDate)
+          .lt('created_at', endDate);
+
+        if (directCount && directCount > 0) {
+          publisherIds = [publisher];
+        } else {
+          // No data found at all for this publisher
+          const emptyReport: IVTReportData = {
+            summary: { totalImpressions: 0, suspiciousImpressions: 0, suspiciousRate: 0, givtCount: 0, sivtCount: 0, analyzedCount: 0, unanalyzedCount: 0 },
+            topReasons: [],
+            topSuspiciousIPs: [],
+            topSuspiciousBundles: [],
+            dailyTrend: [],
+          };
+          return NextResponse.json(emptyReport);
+        }
       }
     }
+
+    // Whether any publisher filter is active (bundle-based or pub_id-based)
+    const hasPublisherFilter = (publisherBundles && publisherBundles.length > 0) || (publisherIds && publisherIds.length > 0);
 
     // ---- Export raw impressions as CSV ----
     if (exportType === 'impressions') {
@@ -99,8 +119,10 @@ export async function GET(request: NextRequest) {
         .order('created_at', { ascending: false })
         .limit(10000);
 
-      if (publisherBundles) {
+      if (publisherBundles && publisherBundles.length > 0) {
         query = query.in('bundle', publisherBundles);
+      } else if (publisherIds && publisherIds.length > 0) {
+        query = query.eq('pub_id', publisherIds[0]);
       }
 
       const { data, error } = await query;
@@ -129,7 +151,8 @@ export async function GET(request: NextRequest) {
         .gte('created_at', startDate)
         .lt('created_at', endDate);
 
-      if (publisherBundles) q = q.in('bundle', publisherBundles);
+      if (publisherBundles && publisherBundles.length > 0) q = q.in('bundle', publisherBundles);
+      else if (publisherIds && publisherIds.length > 0) q = q.eq('pub_id', publisherIds[0]);
       if (suspicious !== undefined) q = q.eq('is_suspicious', suspicious);
       if (analyzed) q = q.not('analyzed_at', 'is', null);
 
@@ -153,16 +176,23 @@ export async function GET(request: NextRequest) {
     let sivtCount = 0;
     let topReasons: Array<{ reason: string; count: number }> = [];
 
-    if (publisherBundles) {
-      // Direct query when publisher filter active (filter by bundles)
-      const { data: suspData } = await supabase
+    if (hasPublisherFilter) {
+      // Direct query when publisher filter active (filter by bundles or pub_id)
+      let suspQuery = supabase
         .from('ivt_impressions')
         .select('ivt_reasons')
         .gte('created_at', startDate)
         .lt('created_at', endDate)
-        .in('bundle', publisherBundles)
         .eq('is_suspicious', true)
         .limit(5000);
+
+      if (publisherBundles && publisherBundles.length > 0) {
+        suspQuery = suspQuery.in('bundle', publisherBundles);
+      } else if (publisherIds && publisherIds.length > 0) {
+        suspQuery = suspQuery.eq('pub_id', publisherIds[0]);
+      }
+
+      const { data: suspData } = await suspQuery;
 
       const reasonMap = new Map<string, number>();
       for (const row of suspData || []) {
@@ -206,14 +236,21 @@ export async function GET(request: NextRequest) {
     // ---- Daily trend ----
     let dailyTrend: Array<{ date: string; total: number; suspicious: number; rate: number }> = [];
 
-    if (publisherBundles) {
-      // Direct query for publisher-filtered trend (filter by bundles)
-      const { data: trendRows } = await supabase
+    if (hasPublisherFilter) {
+      // Direct query for publisher-filtered trend
+      let trendQuery = supabase
         .from('ivt_impressions')
         .select('created_at,is_suspicious')
         .gte('created_at', startDate)
-        .lt('created_at', endDate)
-        .in('bundle', publisherBundles);
+        .lt('created_at', endDate);
+
+      if (publisherBundles && publisherBundles.length > 0) {
+        trendQuery = trendQuery.in('bundle', publisherBundles);
+      } else if (publisherIds && publisherIds.length > 0) {
+        trendQuery = trendQuery.eq('pub_id', publisherIds[0]);
+      }
+
+      const { data: trendRows } = await trendQuery;
 
       const dayMap = new Map<string, { total: number; suspicious: number }>();
       for (const row of trendRows || []) {
@@ -254,15 +291,22 @@ export async function GET(request: NextRequest) {
     // ---- Top suspicious IPs ----
     let topSuspiciousIPs: Array<{ ip: string; count: number; uniqueBundles: number }> = [];
 
-    if (publisherBundles) {
-      const { data: ipRows } = await supabase
+    if (hasPublisherFilter) {
+      let ipQuery = supabase
         .from('ivt_impressions')
         .select('ip,bundle')
         .gte('created_at', startDate)
         .lt('created_at', endDate)
-        .in('bundle', publisherBundles)
         .eq('is_suspicious', true)
         .limit(5000);
+
+      if (publisherBundles && publisherBundles.length > 0) {
+        ipQuery = ipQuery.in('bundle', publisherBundles);
+      } else if (publisherIds && publisherIds.length > 0) {
+        ipQuery = ipQuery.eq('pub_id', publisherIds[0]);
+      }
+
+      const { data: ipRows } = await ipQuery;
 
       const ipMap = new Map<string, { count: number; bundles: Set<string> }>();
       for (const row of ipRows || []) {
@@ -299,14 +343,21 @@ export async function GET(request: NextRequest) {
     // ---- Top suspicious bundles ----
     let topSuspiciousBundles: Array<{ bundle: string; count: number; suspiciousRate: number }> = [];
 
-    if (publisherBundles) {
-      const { data: bundleRows } = await supabase
+    if (hasPublisherFilter) {
+      let bundleQuery = supabase
         .from('ivt_impressions')
         .select('bundle,is_suspicious')
         .gte('created_at', startDate)
         .lt('created_at', endDate)
-        .in('bundle', publisherBundles)
         .limit(5000);
+
+      if (publisherBundles && publisherBundles.length > 0) {
+        bundleQuery = bundleQuery.in('bundle', publisherBundles);
+      } else if (publisherIds && publisherIds.length > 0) {
+        bundleQuery = bundleQuery.eq('pub_id', publisherIds[0]);
+      }
+
+      const { data: bundleRows } = await bundleQuery;
 
       const bundleMap = new Map<string, { total: number; suspicious: number }>();
       for (const row of bundleRows || []) {
