@@ -47,7 +47,7 @@ export async function POST(request: NextRequest) {
 
       const { error: insertError } = await supabase
         .from('publisher_domains')
-        .upsert(rows, { onConflict: 'url' });
+        .upsert(rows, { onConflict: 'domain' });
 
       if (insertError) throw insertError;
 
@@ -68,7 +68,7 @@ export async function POST(request: NextRequest) {
 
       const { data, error } = await supabase
         .from('publisher_domains')
-        .upsert(rows, { onConflict: 'url' })
+        .upsert(rows, { onConflict: 'domain' })
         .select();
 
       if (error) throw error;
@@ -90,7 +90,7 @@ export async function POST(request: NextRequest) {
             url: body.url,
             status: 'active' as const,
           },
-          { onConflict: 'url' }
+          { onConflict: 'domain' }
         )
         .select()
         .single();

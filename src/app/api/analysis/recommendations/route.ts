@@ -16,6 +16,17 @@ interface Recommendation {
   targetValue?: number;
 }
 
+// ============================================
+// Revenue lift cap: no single recommendation
+// should exceed 3x the partner's current weekly revenue,
+// and absolute max is $50K per recommendation (weekly).
+// ============================================
+function capRevenueLift(lift: number, currentRevenue: number): number {
+  const partnerCap = Math.max(currentRevenue * 3, 50); // At least $50 floor
+  const absoluteCap = 50000; // $50K weekly max per recommendation
+  return Math.round(Math.min(Math.max(lift, 0), partnerCap, absoluteCap) * 100) / 100;
+}
+
 export async function GET() {
   try {
     // Always analyze last 7 days
@@ -121,15 +132,20 @@ export async function GET() {
       publisherMap.set(publisher, existing);
     }
 
-    // Calculate global averages for thresholds
+    // Calculate global averages
     const totalImpressions = Array.from(partnerMap.values()).reduce((s, p) => s + p.impressions, 0);
     const totalRevenue = Array.from(partnerMap.values()).reduce((s, p) => s + p.revenue, 0);
     const globalEcpm = totalImpressions > 0 ? (totalRevenue / totalImpressions) * 1000 : 0;
 
-    // Calculate average publisher fill rate for rule 5
+    // Calculate average win rate across all partners (for realistic targets)
+    const totalBids = Array.from(partnerMap.values()).reduce((s, p) => s + p.bids, 0);
+    const totalWins = Array.from(partnerMap.values()).reduce((s, p) => s + p.wins, 0);
+    const globalWinRate = totalBids > 0 ? (totalWins / totalBids) * 100 : 0;
+
+    // Calculate average publisher fill rate
     const publisherFillRates: number[] = [];
     for (const [, stats] of publisherMap) {
-      if (stats.bidRequests > 0) {
+      if (stats.bidRequests > 0 && stats.impressions > 0) {
         publisherFillRates.push((stats.impressions / stats.bidRequests) * 100);
       }
     }
@@ -140,30 +156,35 @@ export async function GET() {
 
     // ====================================================
     // Rule 1: Partner Bid Floor
-    // If partner eCPM < $1.5 AND impressions > 1000 -> recommend bid floor increase
+    // eCPM < $1.50 AND impressions > 1000
+    // Lift = conservative 30% of the gap × current impressions
     // ====================================================
     for (const [name, stats] of partnerMap) {
       if (name === 'Unknown') continue;
-      const ecpm = stats.impressions > 0 ? (stats.revenue / stats.impressions) * 1000 : 0;
+      if (stats.impressions <= 1000) continue;
 
-      if (ecpm < 1.5 && stats.impressions > 1000) {
-        const potentialLift = stats.impressions > 0
-          ? ((1.5 - ecpm) / 1000) * stats.impressions * 0.3 // Conservative 30% of gap
-          : 0;
+      const ecpm = (stats.revenue / stats.impressions) * 1000;
+
+      if (ecpm < 1.5) {
+        // Raising floor won't magically increase eCPM for all impressions.
+        // Realistic: some low-value impressions get filtered, remaining have higher eCPM.
+        // Assume 30% of impressions survive at target eCPM.
+        const survivingImpressions = stats.impressions * 0.3;
+        const potentialLift = (survivingImpressions * (1.5 - ecpm)) / 1000;
 
         recommendations.push({
           id: `rec-${recIdCounter++}`,
           type: 'partner-bid-floor',
           priority: ecpm < 0.5 ? 'critical' : ecpm < 1.0 ? 'high' : 'medium',
           title: `Increase bid floor for ${name}`,
-          description: `${name} has an eCPM of $${ecpm.toFixed(2)}, which is below the $1.50 threshold, across ${stats.impressions.toLocaleString()} impressions. Raising the bid floor could improve yield by filtering low-value bids and encouraging higher bids from this partner.`,
-          estimatedRevenueLift: Math.round(potentialLift * 100) / 100,
+          description: `${name} has an eCPM of $${ecpm.toFixed(2)}, which is below the $1.50 threshold, across ${stats.impressions.toLocaleString()} impressions. Raising the bid floor could filter low-value bids, but will likely reduce volume by 50-70%. Net revenue impact depends on bid price distribution.`,
+          estimatedRevenueLift: capRevenueLift(potentialLift, stats.revenue),
           difficulty: 'easy',
           actionSteps: [
             `Review current bid floor settings for ${name}`,
-            `Set minimum bid floor to $1.50 CPM`,
-            `Monitor impressions and revenue for 48 hours after change`,
-            `If impressions drop more than 20%, consider lowering floor to $1.00`,
+            `Test a $1.00 floor first (lower risk), monitor for 48h`,
+            `If volume holds, increase to $1.50`,
+            `Watch impression count — if it drops >70%, the floor is too aggressive`,
           ],
           partner: name,
           currentValue: ecpm,
@@ -174,139 +195,165 @@ export async function GET() {
 
     // ====================================================
     // Rule 2: Timeout Fix
-    // If partner timeout rate > 15% AND bid_requests > 10000 -> recommend timeout investigation
+    // timeout_rate > 15% AND bid_requests > 10K
+    // Lift = recovered timeouts × partner's own bid-to-win conversion × partner's eCPM
     // ====================================================
     for (const [name, stats] of partnerMap) {
       if (name === 'Unknown') continue;
-      const timeoutRate = stats.bidRequests > 0 ? (stats.timeouts / stats.bidRequests) * 100 : 0;
+      if (stats.bidRequests <= 10000) continue;
 
-      if (timeoutRate > 15 && stats.bidRequests > 10000) {
-        const lostBids = stats.timeouts;
-        // Estimate revenue from lost bids using global eCPM and average win rate
-        const avgWinRate = stats.bids > 0 ? stats.wins / stats.bids : 0.1;
-        const estimatedLostImpressions = lostBids * avgWinRate;
-        const estimatedLift = (estimatedLostImpressions * globalEcpm) / 1000;
+      const timeoutRate = (stats.timeouts / stats.bidRequests) * 100;
+
+      if (timeoutRate > 15) {
+        // Recoverable timeouts: reduce timeout rate to 10% (realistic target)
+        const targetTimeoutRate = 10;
+        const recoverableTimeouts = stats.timeouts - (stats.bidRequests * targetTimeoutRate / 100);
+        if (recoverableTimeouts <= 0) continue;
+
+        // These recovered timeouts become bids. Apply partner's own bid→win→impression funnel.
+        const bidRate = stats.bidRequests > 0 && stats.bids > 0 ? stats.bids / stats.bidRequests : 0;
+        const winRate = stats.bids > 0 && stats.wins > 0 ? stats.wins / stats.bids : 0;
+        const partnerEcpm = stats.impressions > 0 ? (stats.revenue / stats.impressions) * 1000 : globalEcpm;
+
+        // Recovered timeouts → additional bids → additional wins → additional revenue
+        const additionalBids = recoverableTimeouts * Math.min(bidRate, 0.1);
+        const additionalWins = additionalBids * Math.min(winRate, 0.5);
+        const estimatedLift = (additionalWins * partnerEcpm) / 1000;
 
         recommendations.push({
           id: `rec-${recIdCounter++}`,
           type: 'timeout-fix',
           priority: timeoutRate > 30 ? 'critical' : 'high',
           title: `Investigate timeouts for ${name}`,
-          description: `${name} has a timeout rate of ${timeoutRate.toFixed(1)}% across ${stats.bidRequests.toLocaleString()} bid requests (${stats.timeouts.toLocaleString()} timeouts). This is significantly above the 15% threshold and indicates potential infrastructure or configuration issues.`,
-          estimatedRevenueLift: Math.round(estimatedLift * 100) / 100,
+          description: `${name} has a timeout rate of ${timeoutRate.toFixed(1)}% across ${stats.bidRequests.toLocaleString()} bid requests (${stats.timeouts.toLocaleString()} timeouts). Reducing timeouts to ~10% could recover ${Math.round(recoverableTimeouts).toLocaleString()} bid opportunities.`,
+          estimatedRevenueLift: capRevenueLift(estimatedLift, stats.revenue),
           difficulty: 'medium',
           actionSteps: [
             `Contact ${name} to report high timeout rate (${timeoutRate.toFixed(1)}%)`,
-            'Check if timeout threshold setting is appropriate (consider increasing from 150ms to 200ms)',
-            'Review server-side logs for connection errors or slow responses',
+            'Check if timeout threshold is appropriate (consider 200ms for video, 150ms for display)',
+            'Review server-side logs for connection errors or DNS issues',
             'Test endpoint latency from different regions',
-            'Monitor timeout rate daily for the next week',
+            'Monitor timeout rate daily for the next week after changes',
           ],
           partner: name,
           currentValue: timeoutRate,
-          targetValue: 10,
+          targetValue: targetTimeoutRate,
         });
       }
     }
 
     // ====================================================
     // Rule 3: Fill Rate Optimization
-    // If fill rate < 0.1% AND revenue > $50 -> recommend fill rate improvement
+    // fill_rate < 0.1% AND impressions >= 10 (need some data)
+    // Lift = doubling current fill rate (realistic 2x, not 100x)
     // ====================================================
     for (const [name, stats] of partnerMap) {
       if (name === 'Unknown') continue;
-      const fillRate = stats.bidRequests > 0 ? (stats.impressions / stats.bidRequests) * 100 : 0;
+      if (stats.bidRequests <= 0) continue;
+      if (stats.impressions < 10) continue; // Need at least some impressions for meaningful eCPM
 
-      if (fillRate < 0.1 && stats.revenue > 50) {
-        // Estimate what 1% fill rate could yield
-        const potentialImpressions = stats.bidRequests * 0.01;
-        const currentEcpm = stats.impressions > 0 ? (stats.revenue / stats.impressions) * 1000 : globalEcpm;
-        const estimatedLift = ((potentialImpressions - stats.impressions) * currentEcpm) / 1000;
+      const fillRate = (stats.impressions / stats.bidRequests) * 100;
+
+      if (fillRate < 0.1 && stats.revenue > 10) {
+        // Realistic: doubling fill rate is ambitious but achievable
+        const additionalImpressions = stats.impressions; // 2x current = 1x additional
+        const currentEcpm = (stats.revenue / stats.impressions) * 1000;
+        const estimatedLift = (additionalImpressions * currentEcpm) / 1000;
 
         recommendations.push({
           id: `rec-${recIdCounter++}`,
           type: 'fill-rate',
           priority: stats.revenue > 200 ? 'high' : 'medium',
           title: `Improve fill rate for ${name}`,
-          description: `${name} has a fill rate of just ${fillRate.toFixed(3)}% despite generating $${stats.revenue.toFixed(0)} in revenue. With ${stats.bidRequests.toLocaleString()} bid requests, even a small fill rate improvement could significantly boost revenue.`,
-          estimatedRevenueLift: Math.round(Math.max(estimatedLift, 0) * 100) / 100,
+          description: `${name} has a fill rate of ${fillRate.toFixed(4)}% with $${stats.revenue.toFixed(0)} revenue from ${stats.impressions.toLocaleString()} impressions. With ${stats.bidRequests.toLocaleString()} bid requests available, doubling the fill rate through optimization could add meaningful revenue.`,
+          estimatedRevenueLift: capRevenueLift(estimatedLift, stats.revenue),
           difficulty: 'medium',
           actionSteps: [
             `Analyze bid request parameters being sent to ${name}`,
-            'Check if ad format or size requirements are mismatched',
-            'Review geographic targeting and ensure correct setup',
-            'Consider enabling additional ad formats or inventory types',
-            'Schedule a call with the partner to discuss optimization',
+            'Check if ad format/size requirements match available inventory',
+            'Review geographic targeting and app/site list alignment',
+            'Consider enabling additional ad formats (banner, video, native)',
+            'Schedule an optimization call with the partner',
           ],
           partner: name,
           currentValue: fillRate,
-          targetValue: 1.0,
+          targetValue: fillRate * 2,
         });
       }
     }
 
     // ====================================================
-    // Rule 4: Revenue Leakage
-    // If partner has high bids but low wins (win rate < 5%) -> recommend investigation
+    // Rule 4: Revenue Leakage (Win Rate)
+    // win_rate < 5% AND wins >= 5 (need statistical significance)
+    // Lift = realistic improvement based on global avg win rate
     // ====================================================
     for (const [name, stats] of partnerMap) {
       if (name === 'Unknown') continue;
       if (stats.bids < 100) continue; // Need meaningful bid volume
-      const winRate = stats.bids > 0 ? (stats.wins / stats.bids) * 100 : 0;
+      if (stats.wins < 5) continue;   // Need statistical significance
+
+      const winRate = (stats.wins / stats.bids) * 100;
 
       if (winRate < 5) {
-        // Estimate lost revenue: if win rate were 20%, how much more revenue
-        const currentRevPerWin = stats.wins > 0 ? stats.revenue / stats.wins : (stats.revenue > 0 ? stats.revenue : 0.01);
-        const potentialWins = stats.bids * 0.15; // conservative 15% target
-        const estimatedLift = (potentialWins - stats.wins) * currentRevPerWin;
+        // Realistic target: double current win rate OR reach half of global average, whichever is lower
+        const targetWinRate = Math.min(winRate * 2, globalWinRate * 0.5, 10);
+        if (targetWinRate <= winRate) continue; // No room for improvement
+
+        const additionalWins = stats.bids * ((targetWinRate - winRate) / 100);
+        const revenuePerWin = stats.revenue / stats.wins;
+        const estimatedLift = additionalWins * revenuePerWin;
 
         recommendations.push({
           id: `rec-${recIdCounter++}`,
           type: 'revenue-leakage',
-          priority: stats.bids > 50000 ? 'critical' : stats.bids > 10000 ? 'high' : 'medium',
+          priority: stats.revenue > 100 ? 'high' : stats.bids > 50000 ? 'high' : 'medium',
           title: `Revenue leakage detected: ${name}`,
-          description: `${name} submitted ${stats.bids.toLocaleString()} bids but only won ${stats.wins.toLocaleString()} (${winRate.toFixed(1)}% win rate). This suggests the partner is being outbid consistently, or there are technical issues preventing wins from converting.`,
-          estimatedRevenueLift: Math.round(Math.max(estimatedLift, 0) * 100) / 100,
+          description: `${name} submitted ${stats.bids.toLocaleString()} bids but only won ${stats.wins.toLocaleString()} (${winRate.toFixed(2)}% win rate). The platform average win rate is ${globalWinRate.toFixed(2)}%. Improving win rate to ${targetWinRate.toFixed(2)}% through bid optimization could recover lost revenue.`,
+          estimatedRevenueLift: capRevenueLift(estimatedLift, stats.revenue),
           difficulty: 'hard',
           actionSteps: [
-            `Review auction dynamics and pricing for ${name}`,
-            'Check if bid responses are arriving after auction close',
-            'Analyze bid price distribution compared to winning bids',
+            `Review auction dynamics and bid pricing for ${name}`,
+            'Check if bid responses are arriving after auction close (latency issue)',
+            'Analyze bid price distribution vs. winning bid prices',
             'Investigate creative or policy filtering that may reject wins',
-            'Consider adjusting auction priority or timeout settings',
+            'Consider adjusting auction priority or second-price floor',
             `Discuss bid optimization strategy with ${name} account team`,
           ],
           partner: name,
           currentValue: winRate,
-          targetValue: 15,
+          targetValue: targetWinRate,
         });
       }
     }
 
     // ====================================================
     // Rule 5: Publisher Quality
-    // If publisher fill rate < average/2 -> recommend quality review
+    // fill_rate < average/2 AND bid_requests >= 5K AND impressions >= 10
+    // Lift = reaching 75% of average fill rate (not full average)
     // ====================================================
     const fillRateThreshold = avgPublisherFillRate / 2;
 
     for (const [name, stats] of publisherMap) {
       if (name === 'Unknown') continue;
-      if (stats.bidRequests < 1000) continue; // Need meaningful volume
-      const fillRate = stats.bidRequests > 0 ? (stats.impressions / stats.bidRequests) * 100 : 0;
+      if (stats.bidRequests < 5000) continue; // Need meaningful volume
+      if (stats.impressions < 10) continue;   // Need eCPM data
 
-      if (fillRate < fillRateThreshold) {
-        // Estimate lift if we bring fill rate to average
-        const potentialImpressions = stats.bidRequests * (avgPublisherFillRate / 100);
-        const pubEcpm = stats.impressions > 0 ? (stats.revenue / stats.impressions) * 1000 : globalEcpm;
-        const estimatedLift = ((potentialImpressions - stats.impressions) * pubEcpm) / 1000;
+      const fillRate = (stats.impressions / stats.bidRequests) * 100;
+
+      if (fillRate < fillRateThreshold && fillRateThreshold > 0) {
+        // Realistic target: reach 75% of average (not 100%)
+        const targetFillRate = avgPublisherFillRate * 0.75;
+        const additionalImpressions = stats.bidRequests * ((targetFillRate - fillRate) / 100);
+        const pubEcpm = (stats.revenue / stats.impressions) * 1000;
+        const estimatedLift = (additionalImpressions * pubEcpm) / 1000;
 
         recommendations.push({
           id: `rec-${recIdCounter++}`,
           type: 'publisher-quality',
-          priority: stats.revenue > 100 ? 'high' : fillRate < fillRateThreshold / 2 ? 'medium' : 'low',
+          priority: stats.revenue > 100 ? 'high' : 'medium',
           title: `Low fill rate for publisher: ${name}`,
-          description: `Publisher "${name}" has a fill rate of ${fillRate.toFixed(2)}%, which is less than half the average publisher fill rate of ${avgPublisherFillRate.toFixed(2)}%. With ${stats.bidRequests.toLocaleString()} bid requests, there is significant untapped revenue potential.`,
-          estimatedRevenueLift: Math.round(Math.max(estimatedLift, 0) * 100) / 100,
+          description: `Publisher "${name}" has a fill rate of ${fillRate.toFixed(3)}%, well below the average of ${avgPublisherFillRate.toFixed(3)}%. With ${stats.bidRequests.toLocaleString()} bid requests, improving demand partner coverage could unlock additional revenue.`,
+          estimatedRevenueLift: capRevenueLift(estimatedLift, stats.revenue),
           difficulty: 'medium',
           actionSteps: [
             `Review ad placement quality for publisher "${name}"`,
@@ -317,7 +364,7 @@ export async function GET() {
           ],
           publisher: name,
           currentValue: fillRate,
-          targetValue: avgPublisherFillRate,
+          targetValue: targetFillRate,
         });
       }
     }
