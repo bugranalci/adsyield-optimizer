@@ -636,10 +636,18 @@ export default function AppAdsTxtPage() {
                         borderRadius: 2,
                         display: 'flex',
                         alignItems: 'center',
-                        justifyContent: 'space-between',
                         gap: 1,
                       }}
                     >
+                      <Tooltip title="Delete publisher">
+                        <IconButton
+                          size="small"
+                          onClick={() => handleDeletePublisher(pub.id)}
+                          sx={{ color: 'text.secondary', flexShrink: 0, '&:hover': { color: '#FF5252' } }}
+                        >
+                          <DeleteOutlineIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
                       <Box sx={{ overflow: 'hidden', minWidth: 0 }}>
                         <Typography variant="body2" fontWeight={700} noWrap>
                           {pub.domain}
@@ -653,15 +661,6 @@ export default function AppAdsTxtPage() {
                           {pub.url}
                         </Typography>
                       </Box>
-                      <Tooltip title="Delete publisher">
-                        <IconButton
-                          size="small"
-                          onClick={() => handleDeletePublisher(pub.id)}
-                          sx={{ color: 'text.secondary', '&:hover': { color: '#FF5252' } }}
-                        >
-                          <DeleteOutlineIcon fontSize="small" />
-                        </IconButton>
-                      </Tooltip>
                     </Paper>
                   </Grid>
                 ))}

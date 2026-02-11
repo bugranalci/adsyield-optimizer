@@ -7,8 +7,8 @@
 -- publisher_domains: Publisher URL'leri
 CREATE TABLE IF NOT EXISTS publisher_domains (
   id SERIAL PRIMARY KEY,
-  domain TEXT NOT NULL,
-  url TEXT UNIQUE NOT NULL,
+  domain TEXT UNIQUE NOT NULL,
+  url TEXT NOT NULL,
   status TEXT DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'error')),
   last_checked TIMESTAMPTZ,
   added_at TIMESTAMPTZ DEFAULT NOW()
@@ -40,5 +40,6 @@ END
 $$;
 
 -- Indexes
+CREATE INDEX IF NOT EXISTS idx_publisher_domains_domain ON publisher_domains(domain);
 CREATE INDEX IF NOT EXISTS idx_publisher_domains_status ON publisher_domains(status);
 CREATE INDEX IF NOT EXISTS idx_search_history_searched_at ON app_ads_txt_search_history(searched_at DESC);
