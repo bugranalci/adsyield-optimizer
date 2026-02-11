@@ -1,7 +1,7 @@
 import { createServiceClient } from '@/lib/supabase/server';
 import { NextRequest, NextResponse } from 'next/server';
 import type { IVTReportData } from '@/types';
-import { arrayToCSV } from '@/lib/utils/csv';
+import { arrayToCSV, CSV_BOM } from '@/lib/utils/csv';
 
 // GIVT (General Invalid Traffic) rule IDs (must match ruleId in rules.ts)
 const GIVT_RULES = [
@@ -31,18 +31,18 @@ export async function GET(request: NextRequest) {
     const format = searchParams.get('format') || 'json';
     const exportType = searchParams.get('export') || null;
 
-    // Return distinct publisher list for dropdown
+    // Return distinct publisher list for dropdown (using origin_ssp_pub_id from %%sspPubId%% macro)
     if (searchParams.get('publishers_list') === 'true') {
       const supabase = createServiceClient();
       const { data, error } = await supabase
         .from('ivt_impressions')
-        .select('pub_id')
-        .not('pub_id', 'is', null)
-        .neq('pub_id', '');
+        .select('origin_ssp_pub_id')
+        .not('origin_ssp_pub_id', 'is', null)
+        .neq('origin_ssp_pub_id', '');
 
       if (error) throw error;
 
-      const unique = [...new Set((data || []).map((r) => r.pub_id).filter(Boolean))].sort();
+      const unique = [...new Set((data || []).map((r) => r.origin_ssp_pub_id).filter(Boolean))].sort();
       return NextResponse.json({ publishers: unique });
     }
 
@@ -74,7 +74,7 @@ export async function GET(request: NextRequest) {
         .limit(10000);
 
       if (publisher) {
-        query = query.eq('pub_id', publisher);
+        query = query.eq('origin_ssp_pub_id', publisher);
       }
 
       const { data, error } = await query;
@@ -86,7 +86,7 @@ export async function GET(request: NextRequest) {
         ivt_reasons: Array.isArray(r.ivt_reasons) ? r.ivt_reasons.join('; ') : '',
       }));
 
-      const csv = arrayToCSV(rows as Record<string, unknown>[]);
+      const csv = CSV_BOM + arrayToCSV(rows as Record<string, unknown>[]);
       return new NextResponse(csv, {
         headers: {
           'Content-Type': 'text/csv; charset=utf-8',
@@ -103,7 +103,7 @@ export async function GET(request: NextRequest) {
         .gte('created_at', startDate)
         .lt('created_at', endDate);
 
-      if (publisher) q = q.eq('pub_id', publisher);
+      if (publisher) q = q.eq('origin_ssp_pub_id', publisher);
       if (suspicious !== undefined) q = q.eq('is_suspicious', suspicious);
       if (analyzed) q = q.not('analyzed_at', 'is', null);
 
@@ -134,7 +134,7 @@ export async function GET(request: NextRequest) {
         .select('ivt_reasons')
         .gte('created_at', startDate)
         .lt('created_at', endDate)
-        .eq('pub_id', publisher)
+        .eq('origin_ssp_pub_id', publisher)
         .eq('is_suspicious', true)
         .limit(5000);
 
@@ -187,7 +187,7 @@ export async function GET(request: NextRequest) {
         .select('created_at,is_suspicious')
         .gte('created_at', startDate)
         .lt('created_at', endDate)
-        .eq('pub_id', publisher);
+        .eq('origin_ssp_pub_id', publisher);
 
       const dayMap = new Map<string, { total: number; suspicious: number }>();
       for (const row of trendRows || []) {
@@ -234,7 +234,7 @@ export async function GET(request: NextRequest) {
         .select('ip,bundle')
         .gte('created_at', startDate)
         .lt('created_at', endDate)
-        .eq('pub_id', publisher)
+        .eq('origin_ssp_pub_id', publisher)
         .eq('is_suspicious', true)
         .limit(5000);
 
@@ -279,7 +279,7 @@ export async function GET(request: NextRequest) {
         .select('bundle,is_suspicious')
         .gte('created_at', startDate)
         .lt('created_at', endDate)
-        .eq('pub_id', publisher)
+        .eq('origin_ssp_pub_id', publisher)
         .limit(5000);
 
       const bundleMap = new Map<string, { total: number; suspicious: number }>();
@@ -373,7 +373,7 @@ export async function GET(request: NextRequest) {
         count: r.count,
       }));
 
-      const csv = [
+      const csv = CSV_BOM + [
         '--- SUMMARY ---',
         arrayToCSV(summaryRows as Record<string, unknown>[]),
         '',

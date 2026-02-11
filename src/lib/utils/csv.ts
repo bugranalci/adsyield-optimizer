@@ -1,6 +1,6 @@
 /**
  * Convert an array of objects to CSV string.
- * Includes BOM prefix for Excel compatibility.
+ * Does NOT include BOM - caller should add BOM_PREFIX once at the start of the file.
  */
 export function arrayToCSV(
   data: Record<string, unknown>[],
@@ -23,6 +23,8 @@ export function arrayToCSV(
     keys.map((key) => escapeCell(row[key])).join(',')
   );
 
-  // BOM for Excel UTF-8 support
-  return '\uFEFF' + [header, ...rows].join('\n');
+  return [header, ...rows].join('\n');
 }
+
+/** BOM prefix for Excel UTF-8 compatibility. Add once at the start of file. */
+export const CSV_BOM = '\uFEFF';
