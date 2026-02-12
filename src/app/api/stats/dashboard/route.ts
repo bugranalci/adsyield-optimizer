@@ -1,5 +1,4 @@
 import { createServiceClient } from '@/lib/supabase/server';
-import { fetchLimelightStats } from '@/lib/limelight/client';
 import { NextResponse } from 'next/server';
 
 // Helper to fetch all rows from Supabase (bypasses 1000 row default limit)
@@ -128,37 +127,36 @@ export async function GET() {
       .sort((a, b) => b.revenue - a.revenue)
       .slice(0, 10);
 
-    // Fetch top bundles from Limelight API on-demand (not in synced data)
-    let topBundles: Array<{ bundle: string; revenue: number; impressions: number }> = [];
-    try {
-      const bundleData = await fetchLimelightStats({
-        startDate: formatDate(startDate),
-        endDate: formatDate(endDate),
-        dimensions: ['DATE', 'BUNDLE'],
-        metrics: ['IMPRESSIONS', 'DEMAND_PAYOUT'],
-      });
-
-      const bundleMap = new Map<string, { revenue: number; impressions: number }>();
-      for (const row of bundleData) {
-        const bundle = (row.BUNDLE as string) || 'Unknown';
-        const existing = bundleMap.get(bundle) || { revenue: 0, impressions: 0 };
-        existing.revenue += Number(row.DEMAND_PAYOUT || 0);
-        existing.impressions += Number(row.IMPRESSIONS || 0);
-        bundleMap.set(bundle, existing);
+    // Top bundles from DB (pre-synced nightly with BUNDLE dimension)
+    const bundleStats = await fetchAllRows(
+      supabase,
+      'limelight_stats',
+      'bundle,impressions,demand_payout',
+      {
+        gte: ['date', formatDate(startDate)],
+        lte: ['date', formatDate(endDate)],
       }
+    );
 
-      topBundles = Array.from(bundleMap.entries())
-        .filter(([, stats]) => stats.impressions > 0)
-        .map(([bundle, stats]) => ({
-          bundle,
-          revenue: stats.revenue,
-          impressions: stats.impressions,
-        }))
-        .sort((a, b) => b.revenue - a.revenue)
-        .slice(0, 10);
-    } catch (e) {
-      console.error('Failed to fetch bundle data:', e);
+    const bundleMap = new Map<string, { revenue: number; impressions: number }>();
+    for (const row of bundleStats) {
+      const bundle = row.bundle || '';
+      if (!bundle || bundle === '') continue;
+      const existing = bundleMap.get(bundle) || { revenue: 0, impressions: 0 };
+      existing.revenue += Number(row.demand_payout || 0);
+      existing.impressions += Number(row.impressions || 0);
+      bundleMap.set(bundle, existing);
     }
+
+    const topBundles = Array.from(bundleMap.entries())
+      .filter(([, stats]) => stats.impressions > 0)
+      .map(([bundle, stats]) => ({
+        bundle,
+        revenue: stats.revenue,
+        impressions: stats.impressions,
+      }))
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 10);
 
     // Daily revenue trend (from DB)
     const dailyMap = new Map<string, { revenue: number; impressions: number }>();

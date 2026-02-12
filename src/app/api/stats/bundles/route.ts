@@ -1,4 +1,4 @@
-import { fetchLimelightStats, getDateRange } from '@/lib/limelight/client';
+import { createServiceClient } from '@/lib/supabase/server';
 import { NextRequest, NextResponse } from 'next/server';
 
 interface AggregatedBundle {
@@ -14,6 +14,34 @@ interface AggregatedBundle {
   pubPayout: number;
 }
 
+// Helper to fetch all rows from Supabase (bypasses 1000 row default limit)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function fetchAllRows(supabase: ReturnType<typeof createServiceClient>, select: string, startDate: string, endDate: string): Promise<any[]> {
+  const PAGE_SIZE = 1000;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let allData: any[] = [];
+  let offset = 0;
+
+  while (true) {
+    const { data, error } = await supabase
+      .from('limelight_stats')
+      .select(select)
+      .gte('date', startDate)
+      .lte('date', endDate)
+      .neq('bundle', '')
+      .range(offset, offset + PAGE_SIZE - 1);
+
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+
+    allData = allData.concat(data);
+    if (data.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
+  }
+
+  return allData;
+}
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -24,23 +52,32 @@ export async function GET(request: NextRequest) {
     const allowedPeriods = [7, 14, 30];
     const safePeriod = allowedPeriods.includes(period) ? period : 7;
 
-    const { startDate, endDate } = getDateRange(safePeriod);
+    const endDate = new Date();
+    endDate.setDate(endDate.getDate() - 1); // Yesterday
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - safePeriod);
 
-    console.log(`[Bundles API] Fetching bundle data: ${startDate} to ${endDate} (${safePeriod} days)`);
+    const formatDate = (d: Date) => d.toISOString().split('T')[0];
+    const startStr = formatDate(startDate);
+    const endStr = formatDate(endDate);
 
-    // Fetch directly from Limelight API with BUNDLE dimension
-    const rawData = await fetchLimelightStats({
-      startDate,
-      endDate,
-      dimensions: ['DATE', 'BUNDLE'],
-      // All metrics for comprehensive bundle analytics
-    });
+    console.log(`[Bundles API] Reading bundle data from DB: ${startStr} to ${endStr} (${safePeriod} days)`);
+
+    const supabase = createServiceClient();
+
+    // Read from DB (pre-synced nightly with BUNDLE dimension)
+    const rawData = await fetchAllRows(
+      supabase,
+      'bundle,impressions,demand_payout,bid_requests,bids,wins,opportunities,bid_response_timeouts,bid_response_errors,pub_payout',
+      startStr,
+      endStr
+    );
 
     // Aggregate bundles across dates
     const bundleMap = new Map<string, AggregatedBundle>();
 
     for (const row of rawData) {
-      const bundle = (row.BUNDLE as string) || 'Unknown';
+      const bundle = row.bundle || 'Unknown';
 
       const existing = bundleMap.get(bundle) || {
         bundle,
@@ -55,15 +92,15 @@ export async function GET(request: NextRequest) {
         pubPayout: 0,
       };
 
-      existing.impressions += Number(row.IMPRESSIONS || 0);
-      existing.revenue += Number(row.DEMAND_PAYOUT || 0);
-      existing.bidRequests += Number(row.BID_REQUESTS || 0);
-      existing.bids += Number(row.BIDS || 0);
-      existing.wins += Number(row.WINS || 0);
-      existing.opportunities += Number(row.OPPORTUNITIES || 0);
-      existing.timeouts += Number(row.BID_RESPONSE_TIMEOUTS || 0);
-      existing.errors += Number(row.BID_RESPONSE_ERRORS || 0);
-      existing.pubPayout += Number(row.PUB_PAYOUT || 0);
+      existing.impressions += Number(row.impressions || 0);
+      existing.revenue += Number(row.demand_payout || 0);
+      existing.bidRequests += Number(row.bid_requests || 0);
+      existing.bids += Number(row.bids || 0);
+      existing.wins += Number(row.wins || 0);
+      existing.opportunities += Number(row.opportunities || 0);
+      existing.timeouts += Number(row.bid_response_timeouts || 0);
+      existing.errors += Number(row.bid_response_errors || 0);
+      existing.pubPayout += Number(row.pub_payout || 0);
 
       bundleMap.set(bundle, existing);
     }
@@ -110,8 +147,8 @@ export async function GET(request: NextRequest) {
         overallFillRate,
       },
       period: safePeriod,
-      startDate,
-      endDate,
+      startDate: startStr,
+      endDate: endStr,
     });
   } catch (error) {
     console.error('[Bundles API] Error:', error);

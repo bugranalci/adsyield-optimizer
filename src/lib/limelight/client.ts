@@ -13,6 +13,13 @@ export const SYNC_DIMENSIONS = ['DATE', 'DEMAND', 'PUBLISHER'];
 // BUNDLE, OS, COUNTRY, SIZE, CHANNEL_TYPE
 export const ON_DEMAND_DIMENSIONS = ['BUNDLE', 'OS', 'COUNTRY', 'SIZE', 'CHANNEL_TYPE'];
 
+// Extra dimension sets to sync nightly (each set is fetched separately)
+// This pre-caches data so dashboard/bundles/ad-sizes pages load instantly from DB
+export const EXTRA_SYNC_DIMENSION_SETS: string[][] = [
+  ['DATE', 'BUNDLE'],
+  ['DATE', 'SIZE'],
+];
+
 const ALL_METRICS = [
   'OPPORTUNITIES',
   'BID_REQUESTS',

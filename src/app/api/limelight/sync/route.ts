@@ -1,6 +1,6 @@
 import { NextResponse, NextRequest } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
-import { fetchLimelightStats, getYesterdayDate, getDateRange, SYNC_DIMENSIONS } from '@/lib/limelight/client';
+import { fetchLimelightStats, getYesterdayDate, getDateRange, SYNC_DIMENSIONS, EXTRA_SYNC_DIMENSION_SETS } from '@/lib/limelight/client';
 import { transformLimelightResponse } from '@/lib/limelight/transformer';
 
 // Allow up to 300s for sync (Vercel Pro max)
@@ -89,12 +89,13 @@ function getDatesBetween(startDate: string, endDate: string): string[] {
  */
 async function syncSingleDay(
   supabase: ReturnType<typeof createServiceClient>,
-  day: string
+  day: string,
+  dimensions: string[] = SYNC_DIMENSIONS
 ): Promise<{ synced: number; errors: number }> {
   const rawData = await fetchLimelightStats({
     startDate: day,
     endDate: day,
-    dimensions: SYNC_DIMENSIONS,
+    dimensions,
   });
 
   const transformed = transformLimelightResponse(rawData);
@@ -145,7 +146,7 @@ async function performSync(startDate: string, endDate: string) {
     .single();
 
   try {
-    // Process day-by-day to avoid timeouts from large BUNDLE dimension data
+    // Process day-by-day to avoid timeouts from large dimension data
     const days = getDatesBetween(startDate, endDate);
     console.log(`[Sync] Starting: ${startDate} to ${endDate} (${days.length} days)`);
 
@@ -154,24 +155,46 @@ async function performSync(startDate: string, endDate: string) {
     let daysProcessed = 0;
     let timedOut = false;
 
+    // Phase 1: Sync core dimensions (DATE, DEMAND, PUBLISHER)
+    console.log(`[Sync] Phase 1: Core dimensions (${SYNC_DIMENSIONS.join(', ')})`);
     for (const day of days) {
-      // Safety check: bail out before Vercel function timeout
       if (Date.now() - functionStart > SAFE_TIMEOUT_MS) {
-        console.warn(`[Sync] Approaching timeout after ${daysProcessed} days. Stopping gracefully.`);
+        console.warn(`[Sync] Approaching timeout after ${daysProcessed} days in Phase 1. Stopping gracefully.`);
         timedOut = true;
         break;
       }
 
-      console.log(`[Sync] Processing ${day}...`);
-      const result = await syncSingleDay(supabase, day);
+      console.log(`[Sync] Processing ${day} (core)...`);
+      const result = await syncSingleDay(supabase, day, SYNC_DIMENSIONS);
       totalSynced += result.synced;
       totalErrors += result.errors;
       daysProcessed++;
-      console.log(`[Sync] ${day}: ${result.synced} rows synced`);
+      console.log(`[Sync] ${day} (core): ${result.synced} rows synced`);
+    }
+
+    // Phase 2: Sync extra dimension sets (BUNDLE, SIZE, etc.) for pre-caching
+    if (!timedOut) {
+      for (const dimSet of EXTRA_SYNC_DIMENSION_SETS) {
+        console.log(`[Sync] Phase 2: Extra dimensions (${dimSet.join(', ')})`);
+        for (const day of days) {
+          if (Date.now() - functionStart > SAFE_TIMEOUT_MS) {
+            console.warn(`[Sync] Approaching timeout during extra sync (${dimSet.join(',')}). Stopping gracefully.`);
+            timedOut = true;
+            break;
+          }
+
+          console.log(`[Sync] Processing ${day} (${dimSet.join(',')})...`);
+          const result = await syncSingleDay(supabase, day, dimSet);
+          totalSynced += result.synced;
+          totalErrors += result.errors;
+          console.log(`[Sync] ${day} (${dimSet.join(',')}): ${result.synced} rows synced`);
+        }
+        if (timedOut) break;
+      }
     }
 
     const durationMs = Date.now() - functionStart;
-    console.log(`[Sync] Done: ${totalSynced} rows synced, ${totalErrors} errors, ${daysProcessed}/${days.length} days in ${durationMs}ms`);
+    console.log(`[Sync] Done: ${totalSynced} rows synced, ${totalErrors} errors, ${daysProcessed}/${days.length} core days in ${durationMs}ms`);
 
     // Update sync log
     if (syncLog) {
@@ -179,9 +202,9 @@ async function performSync(startDate: string, endDate: string) {
         .from('sync_logs')
         .update({
           rows_synced: totalSynced,
-          status: timedOut ? 'completed' : 'completed',
+          status: 'completed',
           error_message: timedOut
-            ? `Processed ${daysProcessed}/${days.length} days before timeout. Re-run to continue.`
+            ? `Processed ${daysProcessed}/${days.length} days before timeout. Extra dimensions may be partial. Re-run to continue.`
             : totalErrors > 0 ? `${totalErrors} batch(es) had errors` : null,
           completed_at: new Date().toISOString(),
         })

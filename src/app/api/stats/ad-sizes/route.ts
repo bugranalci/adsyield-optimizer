@@ -1,4 +1,4 @@
-import { fetchLimelightStats, getDateRange } from '@/lib/limelight/client';
+import { createServiceClient } from '@/lib/supabase/server';
 import { NextRequest, NextResponse } from 'next/server';
 
 interface AdSizeAggregated {
@@ -12,6 +12,34 @@ interface AdSizeAggregated {
   fillRate: number;
 }
 
+// Helper to fetch all rows from Supabase (bypasses 1000 row default limit)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function fetchAllRows(supabase: ReturnType<typeof createServiceClient>, select: string, startDate: string, endDate: string): Promise<any[]> {
+  const PAGE_SIZE = 1000;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let allData: any[] = [];
+  let offset = 0;
+
+  while (true) {
+    const { data, error } = await supabase
+      .from('limelight_stats')
+      .select(select)
+      .gte('date', startDate)
+      .lte('date', endDate)
+      .neq('ad_unit_type', '')
+      .range(offset, offset + PAGE_SIZE - 1);
+
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+
+    allData = allData.concat(data);
+    if (data.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
+  }
+
+  return allData;
+}
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -21,18 +49,28 @@ export async function GET(request: NextRequest) {
     const validPeriods = [7, 14, 30];
     const days = validPeriods.includes(period) ? period : 7;
 
-    const { startDate, endDate } = getDateRange(days);
+    const endDate = new Date();
+    endDate.setDate(endDate.getDate() - 1); // Yesterday
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
 
-    console.log(`[Ad Sizes] Fetching SIZE data: ${startDate} to ${endDate} (${days} days)`);
+    const formatDate = (d: Date) => d.toISOString().split('T')[0];
+    const startStr = formatDate(startDate);
+    const endStr = formatDate(endDate);
 
-    const rawData = await fetchLimelightStats({
-      startDate,
-      endDate,
-      dimensions: ['DATE', 'SIZE'],
-      metrics: ['IMPRESSIONS', 'DEMAND_PAYOUT', 'BID_REQUESTS', 'BIDS', 'WINS'],
-    });
+    console.log(`[Ad Sizes] Reading SIZE data from DB: ${startStr} to ${endStr} (${days} days)`);
 
-    // Aggregate by SIZE across all dates
+    const supabase = createServiceClient();
+
+    // Read from DB (pre-synced nightly with SIZE dimension)
+    const rawData = await fetchAllRows(
+      supabase,
+      'ad_unit_type,impressions,demand_payout,bid_requests,bids,wins',
+      startStr,
+      endStr
+    );
+
+    // Aggregate by ad_unit_type (SIZE) across all dates
     const sizeMap = new Map<string, {
       impressions: number;
       revenue: number;
@@ -42,7 +80,7 @@ export async function GET(request: NextRequest) {
     }>();
 
     for (const row of rawData) {
-      const size = (row.SIZE as string) || 'Unknown';
+      const size = row.ad_unit_type || 'Unknown';
       const existing = sizeMap.get(size) || {
         impressions: 0,
         revenue: 0,
@@ -51,11 +89,11 @@ export async function GET(request: NextRequest) {
         wins: 0,
       };
 
-      existing.impressions += Number(row.IMPRESSIONS || 0);
-      existing.revenue += Number(row.DEMAND_PAYOUT || 0);
-      existing.bidRequests += Number(row.BID_REQUESTS || 0);
-      existing.bids += Number(row.BIDS || 0);
-      existing.wins += Number(row.WINS || 0);
+      existing.impressions += Number(row.impressions || 0);
+      existing.revenue += Number(row.demand_payout || 0);
+      existing.bidRequests += Number(row.bid_requests || 0);
+      existing.bids += Number(row.bids || 0);
+      existing.wins += Number(row.wins || 0);
 
       sizeMap.set(size, existing);
     }
@@ -89,8 +127,8 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       period: days,
-      startDate,
-      endDate,
+      startDate: startStr,
+      endDate: endStr,
       totalSizes: sizes.length,
       totalRevenue: Math.round(totalRevenue * 100) / 100,
       totalImpressions,
