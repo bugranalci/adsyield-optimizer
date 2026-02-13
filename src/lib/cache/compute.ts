@@ -39,34 +39,30 @@ export async function refreshAllCaches() {
   const prevStart = fmt(daysAgo(14));
   const prevEnd = fmt(daysAgo(7));
 
-  // 8 parallel RPC calls — each returns pre-aggregated rows (not 337K raw rows)
-  const [
-    rPartners, rPublishers, rBundles, rAdTypes, rDates, rCross,
-    rPrevPublishers, rPrevDates,
-  ] = await Promise.all([
-    supabase.rpc('agg_by_demand_partner', { p_start: start7, p_end: today }),
-    supabase.rpc('agg_by_publisher', { p_start: start7, p_end: today }),
-    supabase.rpc('agg_by_bundle', { p_start: start7, p_end: today }),
-    supabase.rpc('agg_by_ad_unit_type', { p_start: start7, p_end: today }),
-    supabase.rpc('agg_by_date', { p_start: start7, p_end: today }),
-    supabase.rpc('agg_by_demand_publisher', { p_start: start7, p_end: today }),
-    supabase.rpc('agg_by_publisher', { p_start: prevStart, p_end: prevEnd }),
-    supabase.rpc('agg_by_date', { p_start: prevStart, p_end: prevEnd }),
-  ]);
-
-  // Check for RPC errors
-  for (const r of [rPartners, rPublishers, rBundles, rAdTypes, rDates, rCross, rPrevPublishers, rPrevDates]) {
-    if (r.error) throw new Error(`RPC error: ${r.error.message}`);
+  // Helper to run a single RPC call with error checking
+  async function rpc(fn: string, params: Record<string, string>): Promise<Row[]> {
+    const { data, error } = await supabase.rpc(fn, params);
+    if (error) throw new Error(`RPC ${fn} error: ${error.message}`);
+    return (data || []) as Row[];
   }
 
-  const partners = (rPartners.data || []) as Row[];
-  const publishers = (rPublishers.data || []) as Row[];
-  const bundles = (rBundles.data || []) as Row[];
-  const adTypes = (rAdTypes.data || []) as Row[];
-  const dates = (rDates.data || []) as Row[];
-  const cross = (rCross.data || []) as Row[];
-  const prevPublishers = (rPrevPublishers.data || []) as Row[];
-  const prevDates = (rPrevDates.data || []) as Row[];
+  // Run queries sequentially to avoid overwhelming the DB
+  // Batch 1: current period core queries
+  const partners = await rpc('agg_by_demand_partner', { p_start: start7, p_end: today });
+  const publishers = await rpc('agg_by_publisher', { p_start: start7, p_end: today });
+  const dates = await rpc('agg_by_date', { p_start: start7, p_end: today });
+  console.log(`[Cache] Batch 1 done: ${partners.length} partners, ${publishers.length} publishers, ${dates.length} dates`);
+
+  // Batch 2: current period extra queries
+  const bundles = await rpc('agg_by_bundle', { p_start: start7, p_end: today });
+  const adTypes = await rpc('agg_by_ad_unit_type', { p_start: start7, p_end: today });
+  const cross = await rpc('agg_by_demand_publisher', { p_start: start7, p_end: today });
+  console.log(`[Cache] Batch 2 done: ${bundles.length} bundles, ${adTypes.length} ad types, ${cross.length} cross`);
+
+  // Batch 3: previous period (for comparison)
+  const prevPublishers = await rpc('agg_by_publisher', { p_start: prevStart, p_end: prevEnd });
+  const prevDates = await rpc('agg_by_date', { p_start: prevStart, p_end: prevEnd });
+  console.log(`[Cache] Batch 3 done: prev ${prevPublishers.length} publishers, ${prevDates.length} dates`);
 
   console.log(`[Cache] Fetched aggregates: ${partners.length} partners, ${publishers.length} publishers, ${bundles.length} bundles, ${adTypes.length} ad types, ${dates.length} dates, ${cross.length} cross`);
 
