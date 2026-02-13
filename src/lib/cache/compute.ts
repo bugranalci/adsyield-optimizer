@@ -34,10 +34,10 @@ export async function refreshAllCaches() {
   const supabase = createServiceClient();
   console.log('[Cache] Starting full cache refresh via RPC...');
 
-  const today = fmt(new Date());
+  const yesterday = fmt(daysAgo(1));
   const start7 = fmt(daysAgo(7));
   const prevStart = fmt(daysAgo(14));
-  const prevEnd = fmt(daysAgo(7));
+  const prevEnd = fmt(daysAgo(8));
 
   // Helper to run a single RPC call with error checking
   async function rpc(fn: string, params: Record<string, string>): Promise<Row[]> {
@@ -48,15 +48,15 @@ export async function refreshAllCaches() {
 
   // Run queries sequentially to avoid overwhelming the DB
   // Batch 1: current period core queries
-  const partners = await rpc('agg_by_demand_partner', { p_start: start7, p_end: today });
-  const publishers = await rpc('agg_by_publisher', { p_start: start7, p_end: today });
-  const dates = await rpc('agg_by_date', { p_start: start7, p_end: today });
+  const partners = await rpc('agg_by_demand_partner', { p_start: start7, p_end: yesterday });
+  const publishers = await rpc('agg_by_publisher', { p_start: start7, p_end: yesterday });
+  const dates = await rpc('agg_by_date', { p_start: start7, p_end: yesterday });
   console.log(`[Cache] Batch 1 done: ${partners.length} partners, ${publishers.length} publishers, ${dates.length} dates`);
 
   // Batch 2: current period extra queries
-  const bundles = await rpc('agg_by_bundle', { p_start: start7, p_end: today });
-  const adTypes = await rpc('agg_by_ad_unit_type', { p_start: start7, p_end: today });
-  const cross = await rpc('agg_by_demand_publisher', { p_start: start7, p_end: today });
+  const bundles = await rpc('agg_by_bundle', { p_start: start7, p_end: yesterday });
+  const adTypes = await rpc('agg_by_ad_unit_type', { p_start: start7, p_end: yesterday });
+  const cross = await rpc('agg_by_demand_publisher', { p_start: start7, p_end: yesterday });
   console.log(`[Cache] Batch 2 done: ${bundles.length} bundles, ${adTypes.length} ad types, ${cross.length} cross`);
 
   // Batch 3: previous period (for comparison)
