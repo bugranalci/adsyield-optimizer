@@ -2,6 +2,7 @@ import { NextResponse, NextRequest } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
 import { fetchLimelightStats, getYesterdayDate, getDateRange, SYNC_DIMENSIONS, EXTRA_SYNC_DIMENSION_SETS } from '@/lib/limelight/client';
 import { transformLimelightResponse } from '@/lib/limelight/transformer';
+import { refreshAllCaches } from '@/lib/cache/compute';
 
 // Allow up to 300s for sync (Vercel Pro max)
 export const maxDuration = 300;
@@ -191,6 +192,26 @@ async function performSync(startDate: string, endDate: string) {
         }
         if (timedOut) break;
       }
+    }
+
+    // Phase 3: Clean up data older than 30 days
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - 30);
+    const cutoff = cutoffDate.toISOString().split('T')[0];
+    const { count: deletedCount } = await supabase
+      .from('limelight_stats')
+      .delete({ count: 'exact' })
+      .lt('date', cutoff);
+    if (deletedCount && deletedCount > 0) {
+      console.log(`[Sync] Cleaned up ${deletedCount} rows older than ${cutoff}`);
+    }
+
+    // Phase 4: Refresh all dashboard/stats caches
+    try {
+      console.log('[Sync] Refreshing caches...');
+      await refreshAllCaches();
+    } catch (cacheError) {
+      console.error('[Sync] Cache refresh failed (non-fatal):', cacheError);
     }
 
     const durationMs = Date.now() - functionStart;
