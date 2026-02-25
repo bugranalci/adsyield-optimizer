@@ -3,14 +3,27 @@ import Anthropic from '@anthropic-ai/sdk';
 import { createClient, createServiceClient } from '@/lib/supabase/server';
 import { SYSTEM_PROMPT, buildPerformanceContext } from '@/lib/claude/prompts';
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
-
 const PAGE_SIZE = 1000;
+
+function getAnthropicClient(): Anthropic {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    throw new Error('ANTHROPIC_API_KEY is not configured');
+  }
+  return new Anthropic({ apiKey });
+}
 
 export async function POST(request: NextRequest) {
   try {
+    // Validate Anthropic API key early
+    let anthropic: Anthropic;
+    try {
+      anthropic = getAnthropicClient();
+    } catch {
+      console.error('Chat API: ANTHROPIC_API_KEY is missing');
+      return new Response('AI service is not configured. Please contact admin.', { status: 503 });
+    }
+
     // Cookie-based client for auth & user-scoped queries (RLS enabled)
     const supabase = await createClient();
 
@@ -72,12 +85,18 @@ export async function POST(request: NextRequest) {
       }));
 
     // Stream response from Claude
-    const stream = anthropic.messages.stream({
-      model: 'claude-sonnet-4-5-20250929',
-      max_tokens: 2048,
-      system: systemPrompt,
-      messages,
-    });
+    let stream: ReturnType<typeof anthropic.messages.stream>;
+    try {
+      stream = anthropic.messages.stream({
+        model: 'claude-sonnet-4-5-20250929',
+        max_tokens: 2048,
+        system: systemPrompt,
+        messages,
+      });
+    } catch (error) {
+      console.error('Chat API: Failed to create Anthropic stream:', error);
+      return new Response('Failed to connect to AI service. Please try again later.', { status: 502 });
+    }
 
     // Create a readable stream for the response
     const encoder = new TextEncoder();
@@ -108,9 +127,24 @@ export async function POST(request: NextRequest) {
             .eq('id', convId);
 
           controller.close();
-        } catch (error) {
+        } catch (error: unknown) {
           console.error('Stream error:', error);
-          controller.error(error);
+          // Send a readable error message to the user instead of crashing
+          const errMsg = error instanceof Error ? error.message : 'Unknown error';
+          let userMessage = '\n\n[Error: AI response interrupted. Please try again.]';
+          if (errMsg.includes('authentication') || errMsg.includes('401')) {
+            userMessage = '\n\n[Error: AI service authentication failed. Please contact admin.]';
+          } else if (errMsg.includes('rate') || errMsg.includes('429')) {
+            userMessage = '\n\n[Error: AI service rate limit reached. Please wait a moment and try again.]';
+          } else if (errMsg.includes('overloaded') || errMsg.includes('529')) {
+            userMessage = '\n\n[Error: AI service is temporarily overloaded. Please try again shortly.]';
+          }
+          try {
+            controller.enqueue(encoder.encode(userMessage));
+            controller.close();
+          } catch {
+            controller.error(error);
+          }
         }
       },
     });

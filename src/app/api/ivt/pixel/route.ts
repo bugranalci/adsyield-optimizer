@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
 
 // 1x1 transparent GIF
@@ -33,16 +33,23 @@ export async function GET(request: NextRequest) {
       imp_id: params.get('imp') || params.get('impId') || null,
     };
 
-    // Fire and forget: insert asynchronously, don't block the pixel response
-    const supabase = createServiceClient();
-    supabase
-      .from('ivt_impressions')
-      .insert(impression)
-      .then(({ error }) => {
+    // Use after() to ensure the DB insert completes even after response is sent.
+    // This prevents data loss in serverless environments where the function may
+    // terminate immediately after sending the response.
+    after(async () => {
+      try {
+        const supabase = createServiceClient();
+        const { error } = await supabase
+          .from('ivt_impressions')
+          .insert(impression);
+
         if (error && !error.message.includes('duplicate')) {
           console.error('IVT pixel insert error:', error);
         }
-      });
+      } catch (err) {
+        console.error('IVT pixel after() error:', err);
+      }
+    });
 
     // Return 1x1 GIF immediately
     return new NextResponse(PIXEL_GIF, {
