@@ -7,6 +7,33 @@ const PIXEL_GIF = Buffer.from(
   'base64'
 );
 
+/**
+ * Parse timestamp from various formats:
+ * - Unix epoch seconds (e.g. 1740000000)
+ * - Unix epoch milliseconds (e.g. 1740000000000)
+ * - ISO 8601 string (e.g. 2025-02-20T00:00:00Z)
+ * - Fallback to current time
+ */
+function parseTimestamp(raw: string | null): string {
+  if (!raw) return new Date().toISOString();
+
+  // If it looks like a numeric epoch timestamp
+  const num = Number(raw);
+  if (!isNaN(num) && num > 0) {
+    // Unix seconds (10 digits) vs milliseconds (13 digits)
+    const ms = num < 1e12 ? num * 1000 : num;
+    const date = new Date(ms);
+    if (!isNaN(date.getTime())) return date.toISOString();
+  }
+
+  // Try parsing as an ISO / date string
+  const parsed = new Date(raw);
+  if (!isNaN(parsed.getTime())) return parsed.toISOString();
+
+  // Fallback
+  return new Date().toISOString();
+}
+
 // GET - Receive pixel fire from Limelight
 // This endpoint must be fast and lightweight
 export async function GET(request: NextRequest) {
@@ -16,7 +43,7 @@ export async function GET(request: NextRequest) {
     // Accept both PRD short params (ts, pub, ua, make, model, crid, ssp, imp)
     // and legacy long params (timestamp, pubId, userAgent, deviceMake, etc.)
     const impression = {
-      timestamp: params.get('ts') || params.get('timestamp') || new Date().toISOString(),
+      timestamp: parseTimestamp(params.get('ts') || params.get('timestamp')),
       pub_id: params.get('pub') || params.get('pubId') || null,
       bundle: params.get('bundle') || null,
       ifa: params.get('ifa') || null,

@@ -166,6 +166,7 @@ export async function POST(request: NextRequest) {
  * Fetches performance context using the service client (bypasses RLS).
  * Paginates through limelight_stats since Supabase has a 1000 row limit.
  * Also fetches unresolved alert counts.
+ * All queries run in parallel with a 5s timeout to avoid blocking the chat.
  */
 async function getPerformanceContext(): Promise<string> {
   try {
@@ -178,31 +179,25 @@ async function getPerformanceContext(): Promise<string> {
     prevStartDate.setDate(startDate.getDate() - 7);
     const formatDate = (d: Date) => d.toISOString().split('T')[0];
 
-    // Paginate through current period stats
-    const stats = await fetchAllStats(
-      serviceClient,
-      formatDate(startDate),
-      formatDate(endDate)
-    );
+    // Run all data fetches in parallel with a 5s timeout
+    const withTimeout = <T>(p: Promise<T>, fallback: T): Promise<T> =>
+      Promise.race([p, new Promise<T>(resolve => setTimeout(() => resolve(fallback), 5000))]);
 
-    // Paginate through previous period stats for revenue comparison
-    const prevStats = await fetchAllStats(
-      serviceClient,
-      formatDate(prevStartDate),
-      formatDate(startDate)
-    );
+    const [stats, prevStats, alertResult, criticalResult] = await Promise.all([
+      withTimeout(fetchAllStats(serviceClient, formatDate(startDate), formatDate(endDate)), []),
+      withTimeout(fetchAllStats(serviceClient, formatDate(prevStartDate), formatDate(startDate)), []),
+      withTimeout(
+        Promise.resolve(serviceClient.from('alerts').select('*', { count: 'exact', head: true }).eq('resolved', false)),
+        { count: 0 } as any
+      ),
+      withTimeout(
+        Promise.resolve(serviceClient.from('alerts').select('*', { count: 'exact', head: true }).eq('resolved', false).eq('severity', 'critical')),
+        { count: 0 } as any
+      ),
+    ]);
 
-    // Fetch unresolved alert counts
-    const { count: activeAlertCount } = await serviceClient
-      .from('alerts')
-      .select('*', { count: 'exact', head: true })
-      .eq('resolved', false);
-
-    const { count: criticalAlertCount } = await serviceClient
-      .from('alerts')
-      .select('*', { count: 'exact', head: true })
-      .eq('resolved', false)
-      .eq('severity', 'critical');
+    const activeAlertCount = (alertResult as any)?.count ?? 0;
+    const criticalAlertCount = (criticalResult as any)?.count ?? 0;
 
     if (!stats || stats.length === 0) {
       return 'No performance data available yet. The system needs to sync data from Limelight first.';
