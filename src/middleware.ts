@@ -36,7 +36,8 @@ export async function middleware(request: NextRequest) {
   // API routes that use cron secret
   const isCronRoute =
     request.nextUrl.pathname.startsWith('/api/limelight/sync') ||
-    request.nextUrl.pathname.startsWith('/api/ivt/analyze');
+    request.nextUrl.pathname.startsWith('/api/ivt/analyze') ||
+    request.nextUrl.pathname.startsWith('/api/ivt/cleanup');
 
   if (isPublicPath || isCronRoute) {
     return supabaseResponse;

@@ -11,6 +11,10 @@
     {
       "path": "/api/ivt/analyze",
       "schedule": "0 */6 * * *"
+    },
+    {
+      "path": "/api/ivt/cleanup",
+      "schedule": "30 3 * * *"
     }
   ]
 }
