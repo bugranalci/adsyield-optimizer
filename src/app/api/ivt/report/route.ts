@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/server';
 import { NextRequest, NextResponse } from 'next/server';
 import type { IVTReportData } from '@/types';
 import { arrayToCSV, CSV_BOM } from '@/lib/utils/csv';
+import { readCache } from '@/lib/cache/compute';
 
 // GIVT (General Invalid Traffic) rule IDs (must match ruleId in rules.ts)
 const GIVT_RULES = [
@@ -66,6 +67,15 @@ export async function GET(request: NextRequest) {
         { error: 'Invalid period. Must be 7, 14, or 30.' },
         { status: 400 }
       );
+    }
+
+    // Cache-first: serve from pre-computed cache for default JSON requests (7d, no publisher filter, no export)
+    if (period === 7 && !publisher && !exportType && format === 'json') {
+      const cached = await readCache('ivt_report_7');
+      if (cached) {
+        return NextResponse.json(cached as IVTReportData);
+      }
+      // Fall through to live query if cache not populated yet
     }
 
     const supabase = createServiceClient();

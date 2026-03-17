@@ -2,19 +2,19 @@
   "crons": [
     {
       "path": "/api/limelight/sync",
-      "schedule": "0 4 * * *"
+      "schedule": "0 0 * * *"
     },
     {
       "path": "/api/cache/refresh",
-      "schedule": "10 4 * * *"
+      "schedule": "10 0 * * *"
     },
     {
       "path": "/api/ivt/analyze",
-      "schedule": "0 */6 * * *"
+      "schedule": "20 0 * * *"
     },
     {
       "path": "/api/ivt/cleanup",
-      "schedule": "30 3 * * *"
+      "schedule": "30 0 * * *"
     }
   ]
 }

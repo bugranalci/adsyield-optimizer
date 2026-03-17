@@ -80,6 +80,124 @@ export async function refreshAllCaches() {
     saveCache(supabase, 'creative_7', computeCreative(partners, dates)),
   ]);
 
+  // Batch 4: Alerts cache (needs current + previous partner data)
+  const alertsData = computeAlerts(partners, prevPublishers, publishers);
+  await saveCache(supabase, 'alerts_7', alertsData);
+  console.log(`[Cache] Saved: alerts_7 (${alertsData.alerts.length} alerts)`);
+
+  // Batch 5: Recommendations cache (needs partners + publishers + cross)
+  const recsData = computeRecommendations(partners, publishers, cross);
+  await saveCache(supabase, 'recommendations_7', recsData);
+  console.log(`[Cache] Saved: recommendations_7 (${recsData.recommendations.length} recs)`);
+
+  // Batch 6: IVT report cache (lightweight summary from RPC)
+  try {
+    const ivtNow = new Date();
+    const ivtStart = new Date(ivtNow);
+    ivtStart.setDate(ivtStart.getDate() - 7);
+    const ivtStartTs = ivtStart.toISOString();
+    const ivtEndTs = ivtNow.toISOString();
+
+    const [totalRes, suspiciousRes, analyzedRes] = await Promise.all([
+      supabase.from('ivt_impressions').select('*', { count: 'exact', head: true }).gte('created_at', ivtStartTs).lt('created_at', ivtEndTs),
+      supabase.from('ivt_impressions').select('*', { count: 'exact', head: true }).gte('created_at', ivtStartTs).lt('created_at', ivtEndTs).eq('is_suspicious', true),
+      supabase.from('ivt_impressions').select('*', { count: 'exact', head: true }).gte('created_at', ivtStartTs).lt('created_at', ivtEndTs).not('analyzed_at', 'is', null),
+    ]);
+
+    const total = totalRes.count ?? 0;
+    const suspiciousCount = suspiciousRes.count ?? 0;
+    const analyzed = analyzedRes.count ?? 0;
+
+    // RPC calls for IVT details
+    const [reasonRes, trendRes, ipRes, bundleRes] = await Promise.all([
+      supabase.rpc('get_ivt_reason_counts', { start_ts: ivtStartTs, end_ts: ivtEndTs }),
+      supabase.rpc('get_ivt_daily_trend', { start_ts: ivtStartTs, end_ts: ivtEndTs }),
+      supabase.rpc('get_ivt_top_ips', { start_ts: ivtStartTs, end_ts: ivtEndTs }),
+      supabase.rpc('get_ivt_top_bundles', { start_ts: ivtStartTs, end_ts: ivtEndTs }),
+    ]);
+
+    const GIVT_RULES = ['invalid_ifa', 'datacenter_ip', 'bot_user_agent', 'invalid_bundle'];
+    const SIVT_RULES = ['high_freq_ifa', 'high_freq_ip', 'device_os_mismatch'];
+    let givtCount = 0, sivtCount = 0;
+    const topReasons: Array<{ reason: string; count: number }> = [];
+    if (reasonRes.data && Array.isArray(reasonRes.data)) {
+      for (const row of reasonRes.data) {
+        const reason = (row.reason as string) || '';
+        const cnt = Number(row.cnt) || 0;
+        if (GIVT_RULES.includes(reason)) givtCount += cnt;
+        else if (SIVT_RULES.includes(reason)) sivtCount += cnt;
+        topReasons.push({ reason, count: cnt });
+      }
+      topReasons.sort((a, b) => b.count - a.count);
+    }
+
+    const dailyTrend = (trendRes.data || []).map((d: { day: string; total: number; suspicious: number }) => ({
+      date: d.day,
+      total: Number(d.total),
+      suspicious: Number(d.suspicious),
+      rate: Number(d.total) > 0 ? (Number(d.suspicious) / Number(d.total)) * 100 : 0,
+    }));
+
+    const topSuspiciousIPs = (ipRes.data || []).map((r: { ip: string; cnt: number; unique_bundles: number }) => ({
+      ip: (r.ip || '').replace(/\/\d+$/, ''),
+      count: Number(r.cnt),
+      uniqueBundles: Number(r.unique_bundles),
+    }));
+
+    const topSuspiciousBundles = (bundleRes.data || []).map((r: { bundle: string; suspicious_count: number; suspicious_rate: number }) => ({
+      bundle: r.bundle,
+      count: Number(r.suspicious_count),
+      suspiciousRate: Number(r.suspicious_rate),
+    }));
+
+    const ivtReport = {
+      summary: {
+        totalImpressions: total,
+        suspiciousImpressions: suspiciousCount,
+        suspiciousRate: total > 0 ? Math.round((suspiciousCount / total) * 1000) / 10 : 0,
+        givtCount,
+        sivtCount,
+        analyzedCount: analyzed,
+        unanalyzedCount: total - analyzed,
+      },
+      topReasons,
+      topSuspiciousIPs,
+      topSuspiciousBundles,
+      dailyTrend,
+    };
+
+    await saveCache(supabase, 'ivt_report_7', ivtReport);
+    console.log(`[Cache] Saved: ivt_report_7`);
+  } catch (ivtErr) {
+    console.error('[Cache] IVT report cache failed (non-fatal):', ivtErr);
+  }
+
+  // Batch 7: Chat performance context cache
+  const chatContext = computeChatContext(partners, publishers, dates, prevDates);
+  await saveCache(supabase, 'chat_context_7', chatContext);
+  console.log(`[Cache] Saved: chat_context_7`);
+
+  // Store alerts in alerts table (same as the alerts endpoint did)
+  if (alertsData.alerts.length > 0) {
+    const now = new Date().toISOString();
+    const alertRows = alertsData.alerts.map((alert: { type: string; severity: string; metric: string; currentValue: number; previousValue: number; changePct: number; message: string; partner: string }) => ({
+      type: alert.type,
+      severity: alert.severity,
+      metric: alert.metric,
+      threshold: 0,
+      current_value: alert.currentValue,
+      previous_value: alert.previousValue,
+      change: alert.changePct,
+      message: alert.message,
+      partner: alert.partner,
+      resolved: false,
+      created_at: now,
+    }));
+    const { error: insertError } = await supabase.from('alerts').insert(alertRows);
+    if (insertError) console.error('[Cache] Failed to store alerts in DB:', insertError.message);
+    else console.log(`[Cache] Stored ${alertRows.length} alerts in DB`);
+  }
+
   console.log('[Cache] All caches refreshed');
 }
 
@@ -508,5 +626,271 @@ function computeCreative(partnerData: Row[], dateData: Row[]) {
       overallWinRate: tB > 0 ? (tW / tB) * 100 : 0, overallEcpm: tI > 0 ? (tR / tI) * 1000 : 0,
       overallBidRate: tBR > 0 ? (tB / tBR) * 100 : 0 },
     partners, dailyTrend, period: 7,
+  };
+}
+
+// ─── ALERTS (computed from pre-aggregated RPC data) ─────────
+
+interface AlertItem {
+  type: 'performance' | 'revenue' | 'technical' | 'quality';
+  severity: 'critical' | 'warning' | 'info';
+  metric: string;
+  partner: string;
+  currentValue: number;
+  previousValue: number;
+  changePct: number;
+  message: string;
+}
+
+function computeAlerts(partnerData: Row[], prevPublisherData: Row[], publisherData: Row[]) {
+  const alerts: AlertItem[] = [];
+
+  const prevPubMap = new Map<string, Row>();
+  for (const r of prevPublisherData) prevPubMap.set(r.name, r);
+
+  // Publisher-level alerts: revenue drops, fill rate drops
+  for (const curr of publisherData) {
+    const prev = prevPubMap.get(curr.name);
+    if (!prev) continue;
+
+    const currRev = v(curr.revenue), prevRev = v(prev.revenue);
+    if (prevRev > 0) {
+      const change = ((currRev - prevRev) / prevRev) * 100;
+      if (change < -15) {
+        alerts.push({
+          type: 'revenue', severity: 'critical', metric: 'revenue', partner: curr.name,
+          currentValue: Math.round(currRev * 100) / 100,
+          previousValue: Math.round(prevRev * 100) / 100,
+          changePct: Math.round(change * 100) / 100,
+          message: `Revenue from ${curr.name} dropped ${Math.abs(Math.round(change))}% ($${Math.round(prevRev)} -> $${Math.round(currRev)})`,
+        });
+      } else if (change < -8) {
+        alerts.push({
+          type: 'revenue', severity: 'warning', metric: 'revenue', partner: curr.name,
+          currentValue: Math.round(currRev * 100) / 100,
+          previousValue: Math.round(prevRev * 100) / 100,
+          changePct: Math.round(change * 100) / 100,
+          message: `Revenue from ${curr.name} declined ${Math.abs(Math.round(change))}% ($${Math.round(prevRev)} -> $${Math.round(currRev)})`,
+        });
+      }
+    }
+
+    const currBR = v(curr.bid_requests), prevBR = v(prev.bid_requests);
+    const currFR = currBR > 0 ? (v(curr.impressions) / currBR) * 100 : 0;
+    const prevFR = prevBR > 0 ? (v(prev.impressions) / prevBR) * 100 : 0;
+    if (prevBR > 0 && prevFR > 0) {
+      const frChange = ((currFR - prevFR) / prevFR) * 100;
+      if (frChange < -10) {
+        alerts.push({
+          type: 'performance', severity: 'warning', metric: 'fill_rate', partner: curr.name,
+          currentValue: Math.round(currFR * 100) / 100,
+          previousValue: Math.round(prevFR * 100) / 100,
+          changePct: Math.round(frChange * 100) / 100,
+          message: `Fill rate for ${curr.name} dropped ${Math.abs(Math.round(frChange))}% (${prevFR.toFixed(1)}% -> ${currFR.toFixed(1)}%)`,
+        });
+      }
+    }
+  }
+
+  // Partner-level: timeout rate spikes
+  for (const r of partnerData) {
+    const br = v(r.bid_requests), to = v(r.timeouts);
+    if (br < 10000) continue;
+    const timeoutRate = (to / br) * 100;
+    if (timeoutRate > 20) {
+      alerts.push({
+        type: 'technical', severity: 'warning', metric: 'timeout_rate', partner: r.name,
+        currentValue: Math.round(timeoutRate * 100) / 100,
+        previousValue: 0, changePct: 0,
+        message: `Timeout rate for ${r.name} is ${timeoutRate.toFixed(1)}% across ${br.toLocaleString()} bid requests`,
+      });
+    }
+  }
+
+  const severityOrder: Record<string, number> = { critical: 0, warning: 1, info: 2 };
+  alerts.sort((a, b) => severityOrder[a.severity] - severityOrder[b.severity]);
+
+  return {
+    generatedAt: new Date().toISOString(),
+    summary: {
+      total: alerts.length,
+      critical: alerts.filter(a => a.severity === 'critical').length,
+      warning: alerts.filter(a => a.severity === 'warning').length,
+      info: alerts.filter(a => a.severity === 'info').length,
+    },
+    alerts,
+  };
+}
+
+// ─── RECOMMENDATIONS (computed from pre-aggregated RPC data) ─
+
+function capRevenueLift(lift: number, currentRevenue: number): number {
+  const partnerCap = Math.max(currentRevenue * 3, 50);
+  return Math.round(Math.min(Math.max(lift, 0), partnerCap, 50000) * 100) / 100;
+}
+
+function computeRecommendations(partnerData: Row[], publisherData: Row[], _crossData: Row[]) {
+  interface Rec {
+    id: string; type: string; priority: string; title: string; description: string;
+    estimatedRevenueLift: number; difficulty: string; actionSteps: string[];
+    partner?: string; publisher?: string; currentValue?: number; targetValue?: number;
+  }
+
+  const recommendations: Rec[] = [];
+  let recId = 1;
+
+  const totalImp = partnerData.reduce((s, r) => s + v(r.impressions), 0);
+  const totalRev = partnerData.reduce((s, r) => s + v(r.revenue), 0);
+  const globalEcpm = totalImp > 0 ? (totalRev / totalImp) * 1000 : 0;
+  const totalBids = partnerData.reduce((s, r) => s + v(r.bids), 0);
+  const totalWins = partnerData.reduce((s, r) => s + v(r.wins), 0);
+  const globalWinRate = totalBids > 0 ? (totalWins / totalBids) * 100 : 0;
+
+  const pubFR: number[] = [];
+  for (const r of publisherData) {
+    const br = v(r.bid_requests), imp = v(r.impressions);
+    if (br > 0 && imp > 0) pubFR.push((imp / br) * 100);
+  }
+  const avgPubFR = pubFR.length > 0 ? pubFR.reduce((s, x) => s + x, 0) / pubFR.length : 0;
+
+  // Rule 1: Bid Floor
+  for (const r of partnerData) {
+    if (r.name === 'Unknown' || v(r.impressions) <= 1000) continue;
+    const ecpm = (v(r.revenue) / v(r.impressions)) * 1000;
+    if (ecpm < 1.5) {
+      const lift = (v(r.impressions) * 0.3 * (1.5 - ecpm)) / 1000;
+      recommendations.push({
+        id: `rec-${recId++}`, type: 'partner-bid-floor',
+        priority: ecpm < 0.5 ? 'critical' : ecpm < 1.0 ? 'high' : 'medium',
+        title: `Increase bid floor for ${r.name}`,
+        description: `eCPM $${ecpm.toFixed(2)} across ${v(r.impressions).toLocaleString()} impressions.`,
+        estimatedRevenueLift: capRevenueLift(lift, v(r.revenue)), difficulty: 'easy',
+        actionSteps: [`Review bid floor for ${r.name}`, 'Test $1.00 floor first', 'Monitor volume'],
+        partner: r.name, currentValue: ecpm, targetValue: 1.5,
+      });
+    }
+  }
+
+  // Rule 2: Timeout Fix
+  for (const r of partnerData) {
+    if (r.name === 'Unknown' || v(r.bid_requests) <= 10000) continue;
+    const toRate = (v(r.timeouts) / v(r.bid_requests)) * 100;
+    if (toRate > 15) {
+      const recoverable = v(r.timeouts) - (v(r.bid_requests) * 10 / 100);
+      if (recoverable <= 0) continue;
+      const bidRate = v(r.bids) > 0 ? v(r.bids) / v(r.bid_requests) : 0;
+      const winRate = v(r.wins) > 0 ? v(r.wins) / v(r.bids) : 0;
+      const pEcpm = v(r.impressions) > 0 ? (v(r.revenue) / v(r.impressions)) * 1000 : globalEcpm;
+      const lift = (recoverable * Math.min(bidRate, 0.1) * Math.min(winRate, 0.5) * pEcpm) / 1000;
+      recommendations.push({
+        id: `rec-${recId++}`, type: 'timeout-fix',
+        priority: toRate > 30 ? 'critical' : 'high',
+        title: `Investigate timeouts for ${r.name}`,
+        description: `${toRate.toFixed(1)}% timeout rate across ${v(r.bid_requests).toLocaleString()} bid requests.`,
+        estimatedRevenueLift: capRevenueLift(lift, v(r.revenue)), difficulty: 'medium',
+        actionSteps: [`Contact ${r.name}`, 'Check timeout thresholds', 'Review server logs'],
+        partner: r.name, currentValue: toRate, targetValue: 10,
+      });
+    }
+  }
+
+  // Rule 3: Fill Rate
+  for (const r of partnerData) {
+    if (r.name === 'Unknown' || v(r.bid_requests) <= 0 || v(r.impressions) < 10) continue;
+    const fr = (v(r.impressions) / v(r.bid_requests)) * 100;
+    if (fr < 0.1 && v(r.revenue) > 10) {
+      const lift = (v(r.impressions) * (v(r.revenue) / v(r.impressions)) * 1000) / 1000;
+      recommendations.push({
+        id: `rec-${recId++}`, type: 'fill-rate', priority: v(r.revenue) > 200 ? 'high' : 'medium',
+        title: `Improve fill rate for ${r.name}`,
+        description: `Fill rate ${fr.toFixed(4)}% with $${v(r.revenue).toFixed(0)} revenue.`,
+        estimatedRevenueLift: capRevenueLift(lift, v(r.revenue)), difficulty: 'medium',
+        actionSteps: [`Analyze bid params for ${r.name}`, 'Check ad formats', 'Review geo targeting'],
+        partner: r.name, currentValue: fr, targetValue: fr * 2,
+      });
+    }
+  }
+
+  // Rule 4: Revenue Leakage
+  for (const r of partnerData) {
+    if (r.name === 'Unknown' || v(r.bids) < 100 || v(r.wins) < 5) continue;
+    const wr = (v(r.wins) / v(r.bids)) * 100;
+    if (wr < 5) {
+      const target = Math.min(wr * 2, globalWinRate * 0.5, 10);
+      if (target <= wr) continue;
+      const lift = v(r.bids) * ((target - wr) / 100) * (v(r.revenue) / v(r.wins));
+      recommendations.push({
+        id: `rec-${recId++}`, type: 'revenue-leakage',
+        priority: v(r.revenue) > 100 ? 'high' : 'medium',
+        title: `Revenue leakage: ${r.name}`,
+        description: `Win rate ${wr.toFixed(2)}% vs ${globalWinRate.toFixed(2)}% avg.`,
+        estimatedRevenueLift: capRevenueLift(lift, v(r.revenue)), difficulty: 'hard',
+        actionSteps: ['Review auction dynamics', 'Check bid latency', 'Analyze bid prices'],
+        partner: r.name, currentValue: wr, targetValue: target,
+      });
+    }
+  }
+
+  // Rule 5: Publisher Quality
+  const frThreshold = avgPubFR / 2;
+  for (const r of publisherData) {
+    if (r.name === 'Unknown' || v(r.bid_requests) < 5000 || v(r.impressions) < 10) continue;
+    const fr = (v(r.impressions) / v(r.bid_requests)) * 100;
+    if (fr < frThreshold && frThreshold > 0) {
+      const targetFR = avgPubFR * 0.75;
+      const addImp = v(r.bid_requests) * ((targetFR - fr) / 100);
+      const pEcpm = (v(r.revenue) / v(r.impressions)) * 1000;
+      const lift = (addImp * pEcpm) / 1000;
+      recommendations.push({
+        id: `rec-${recId++}`, type: 'publisher-quality',
+        priority: v(r.revenue) > 100 ? 'high' : 'medium',
+        title: `Low fill rate: ${r.name}`,
+        description: `Fill rate ${fr.toFixed(3)}% vs ${avgPubFR.toFixed(3)}% avg.`,
+        estimatedRevenueLift: capRevenueLift(lift, v(r.revenue)), difficulty: 'medium',
+        actionSteps: ['Review ad placement quality', 'Check app-ads.txt', 'Add demand partners'],
+        publisher: r.name, currentValue: fr, targetValue: targetFR,
+      });
+    }
+  }
+
+  recommendations.sort((a, b) => b.estimatedRevenueLift - a.estimatedRevenueLift);
+  const totalLift = recommendations.reduce((s, r) => s + r.estimatedRevenueLift, 0);
+
+  return {
+    summary: {
+      totalRecommendations: recommendations.length,
+      criticalCount: recommendations.filter(r => r.priority === 'critical').length,
+      highCount: recommendations.filter(r => r.priority === 'high').length,
+      mediumCount: recommendations.filter(r => r.priority === 'medium').length,
+      lowCount: recommendations.filter(r => r.priority === 'low').length,
+      estimatedTotalRevenueLift: Math.round(totalLift * 100) / 100,
+    },
+    recommendations,
+  };
+}
+
+// ─── CHAT CONTEXT (pre-computed for AI assistant) ────────────
+
+function computeChatContext(partnerData: Row[], _publisherData: Row[], dates: Row[], prevDates: Row[]) {
+  const totalRevenue = dates.reduce((s, r) => s + v(r.revenue), 0);
+  const totalImpressions = dates.reduce((s, r) => s + v(r.impressions), 0);
+  const totalBidRequests = dates.reduce((s, r) => s + v(r.bid_requests), 0);
+  const avgECPM = totalImpressions > 0 ? (totalRevenue / totalImpressions) * 1000 : 0;
+  const fillRate = totalBidRequests > 0 ? (totalImpressions / totalBidRequests) * 100 : 0;
+  const prevRevenue = prevDates.reduce((s, r) => s + v(r.revenue), 0);
+  const revenueChange = prevRevenue > 0 ? ((totalRevenue - prevRevenue) / prevRevenue) * 100 : 0;
+
+  const allPartners = partnerData.map(r => ({
+    name: r.name,
+    revenue: v(r.revenue),
+    ecpm: v(r.impressions) > 0 ? (v(r.revenue) / v(r.impressions)) * 1000 : 0,
+    fillRate: v(r.bid_requests) > 0 ? (v(r.impressions) / v(r.bid_requests)) * 100 : 0,
+    timeoutRate: v(r.bid_requests) > 0 ? (v(r.timeouts) / v(r.bid_requests)) * 100 : 0,
+  }));
+
+  return {
+    totalRevenue, totalImpressions, avgECPM, fillRate, revenueChange,
+    topPartners: [...allPartners].sort((a, b) => b.revenue - a.revenue).slice(0, 5),
+    worstPartners: allPartners.filter(p => p.ecpm < 1 || p.timeoutRate > 15).sort((a, b) => a.ecpm - b.ecpm).slice(0, 5),
   };
 }
